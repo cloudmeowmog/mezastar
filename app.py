@@ -217,7 +217,7 @@ def page_manage_cards():
             json_str = json.dumps(st.session_state['inventory'], ensure_ascii=False, indent=4)
             st.download_button("⬇️ 下載備份 (.json)", json_str, DB_FILE)
 
-# --- 功能 2: 對戰分析 (Tag 退化機制版) ---
+# --- 功能 2: 對戰分析 ---
 TYPE_CHART = {
     "一般": {"岩石": 0.5, "幽靈": 0, "鋼": 0.5},
     "火": {"草": 2, "冰": 2, "蟲": 2, "鋼": 2, "水": 0.5, "火": 0.5, "岩石": 0.5, "龍": 0.5},
@@ -261,7 +261,8 @@ def page_battle():
             st.markdown(f"### 🥊 對手 {i+1}")
             t1 = st.selectbox(f"屬性 1", POKEMON_TYPES, index=0, key=f"op{i}_t1")
             t2 = st.selectbox(f"屬性 2", POKEMON_TYPES, index=len(POKEMON_TYPES)-1, key=f"op{i}_t2")
-            move_type = st.selectbox(f"招式屬性 (攻擊我方)", POKEMON_TYPES, index=0, key=f"op{i}_move")
+            # 修正處：將標籤改為粗體
+            move_type = st.selectbox(f"**招式屬性 (攻擊我方)**", POKEMON_TYPES, index=0, key=f"op{i}_move")
             opponents.append({"t1": t1, "t2": t2, "move": move_type})
 
     st.markdown("---")
@@ -272,10 +273,6 @@ def page_battle():
             return
 
         candidates = []
-        
-        # 針對每一張卡片，產生「兩種」候選方案：
-        # 1. 全力模式 (使用 Tag + 加成)
-        # 2. 保留模式 (不使用 Tag，只用數值)
         
         for card in st.session_state['inventory']:
             
@@ -310,7 +307,7 @@ def page_battle():
             if tag_name != '無':
                 score_special *= 1.2
             
-            # 修正處：直接賦值，不使用海象運算子
+            # 修正處：語法錯誤已修復
             best_move_display_special = best_move_special
             
             candidates.append({
@@ -352,10 +349,10 @@ def page_battle():
                     "mode": "normal"
                 })
 
-        # 2. 排序
+        # 排序
         candidates.sort(key=lambda x: x['score'], reverse=True)
 
-        # 3. 挑選隊伍 (Greedy)
+        # 挑選隊伍 (Greedy)
         final_team = []
         used_names = set()
         used_tags = set()
