@@ -47,7 +47,6 @@ if 'uploader_key' not in st.session_state:
     st.session_state['uploader_key'] = 0
 
 # --- 初始化輸入框的 Session State ---
-# 這裡也要初始化編輯用的 key，避免 callback 找不到 key 報錯
 defaults = {
     "add_name_input": "",
     "add_attack_input": 100,
@@ -62,7 +61,7 @@ defaults = {
     "add_m2_type_input": "一般",
     "add_m2_cat_input": "攻擊",
     "msg_area": "",
-    # 編輯用的 Key 初始化 (若尚未存在)
+    # 編輯用的 Key
     "edit_select_index": 0,
     "edit_name_input": "",
     "edit_attack_input": 100,
@@ -76,6 +75,8 @@ defaults = {
     "edit_m2_name_input": "",
     "edit_m2_type_input": "一般",
     "edit_m2_cat_input": "攻擊",
+    # 新增：管理分頁的狀態 Key
+    "manage_sub_mode": "➕ 新增卡片" 
 }
 for key, val in defaults.items():
     if key not in st.session_state:
@@ -93,13 +94,12 @@ SPECIAL_TAGS = [
 
 MOVE_CATEGORIES = ["攻擊", "特攻"]
 
-# --- 關鍵修正：同步編輯欄位的 Helper Function ---
+# --- 同步編輯欄位的 Helper Function ---
 def fill_edit_fields():
-    """當下拉選單改變時，強制把選中卡片的資料寫入編輯框的 Session State"""
+    """將選中卡片的資料填入編輯框"""
     if not st.session_state['inventory']: return
     
     idx = st.session_state.get('edit_select_index', 0)
-    # 安全檢查：防止索引超出範圍
     if idx >= len(st.session_state['inventory']): idx = 0
     
     c = st.session_state['inventory'][idx]
@@ -161,6 +161,10 @@ def save_new_card_callback():
     if 'last_processed_file' in st.session_state:
         del st.session_state['last_processed_file']
     st.session_state['uploader_key'] += 1
+    
+    # 強制切換回新增模式 (雖然本來就在這，但保持一致性)
+    st.session_state['manage_sub_mode'] = "➕ 新增卡片"
+    st.rerun()
 
 def update_card_callback():
     idx = st.session_state['edit_select_index']
@@ -187,6 +191,11 @@ def update_card_callback():
     st.session_state['inventory'][idx] = updated_card
     save_db(st.session_state['inventory'])
     st.session_state['msg_area'] = f"✅ 已更新：{updated_card['name']}"
+    
+    fill_edit_fields()
+    # 這裡不需要特別設定 manage_sub_mode，因為 st.radio 會自動讀取當前 session_state
+    # 它會保持在 "✏️ 編輯與刪除"
+    st.rerun()
 
 def delete_card_callback():
     idx = st.session_state['edit_select_index']
@@ -196,9 +205,9 @@ def delete_card_callback():
         save_db(st.session_state['inventory'])
         st.session_state['msg_area'] = f"🗑️ 已刪除：{removed_name}"
         
-        # 刪除後重置索引並刷新編輯區
         st.session_state['edit_select_index'] = 0
         fill_edit_fields()
+        st.rerun()
 
 # --- 功能 1: 卡片資料庫管理 ---
 def page_manage_cards():
@@ -206,11 +215,19 @@ def page_manage_cards():
     
     if 'msg_area' in st.session_state and st.session_state['msg_area']:
         st.success(st.session_state['msg_area'])
-        st.session_state['msg_area'] = "" 
+        st.session_state['msg_area'] = "" # 顯示一次後清除
 
-    tab_add, tab_edit = st.tabs(["➕ 新增卡片", "✏️ 編輯與刪除"])
+    # 關鍵修改：使用 Radio Button 代替 Tabs，這樣刷新後可以保持在當前選項
+    sub_mode = st.radio(
+        "功能切換", 
+        ["➕ 新增卡片", "✏️ 編輯與刪除"], 
+        horizontal=True,
+        key="manage_sub_mode" # 綁定 Session State
+    )
 
-    with tab_add:
+    st.markdown("---")
+
+    if sub_mode == "➕ 新增卡片":
         col_preview, col_edit = st.columns([1, 2])
         with col_preview:
             st.subheader("圖片上傳")
@@ -262,30 +279,27 @@ def page_manage_cards():
                 
                 st.form_submit_button("💾 新增至資料庫", type="primary", on_click=save_new_card_callback)
 
-    with tab_edit:
+    elif sub_mode == "✏️ 編輯與刪除":
         if not st.session_state['inventory']:
             st.info("資料庫目前是空的。")
         else:
             st.subheader("🔍 選擇要管理的卡片")
             card_options = [f"{i+1}. {c['name']} ({c['tag']})" for i, c in enumerate(st.session_state['inventory'])]
             
-            # 關鍵修改：加入 on_change 來觸發同步函式
             selected_idx = st.selectbox(
                 "請選擇卡片", 
                 range(len(st.session_state['inventory'])), 
                 format_func=lambda x: card_options[x], 
                 key="edit_select_index",
-                on_change=fill_edit_fields # <--- 選單改變時，立刻執行同步
+                on_change=fill_edit_fields
             )
             
-            # 確保第一次載入時，如果編輯框是空的，也執行一次同步 (針對第一次切換到此分頁的情況)
             if st.session_state['edit_name_input'] == "" and st.session_state['inventory']:
                  fill_edit_fields()
 
             st.markdown("---")
             col_form, col_action = st.columns([3, 1])
             with col_form:
-                # 這裡的 value 參數在第二次以後會被 key 的 session_state 覆蓋，所以必須依賴 fill_edit_fields
                 st.subheader("編輯卡片資訊")
                 with st.form("edit_form"):
                     st.text_input("卡片名稱", key="edit_name_input")
