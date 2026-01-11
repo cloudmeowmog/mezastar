@@ -35,7 +35,8 @@ def save_db(data):
         sort_inventory(data)
         with open(DB_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
-        st.toast("✅ 資料庫已儲存至硬碟！", icon="💾")
+        # 使用 toast 輕量提示存檔成功
+        st.toast("✅ 資料庫已自動存檔！", icon="💾")
     except Exception as e:
         st.error(f"寫入資料庫失敗: {e}")
 
@@ -128,7 +129,7 @@ def fill_edit_fields():
     st.session_state['edit_m2_type_input'] = m2['type']
     st.session_state['edit_m2_cat_input'] = m2.get('category', '攻擊')
 
-# --- Callbacks: 資料庫管理 (已移除 st.rerun) ---
+# --- Callbacks: 資料庫管理 ---
 def save_new_card_callback():
     name = st.session_state['add_name_input']
     if not name: name = "未命名"
@@ -155,10 +156,15 @@ def save_new_card_callback():
     }
     
     st.session_state['inventory'].append(new_card)
+    
+    # 1. 自動排序
     sort_inventory(st.session_state['inventory'])
     
-    st.session_state['msg_area'] = f"✅ 已新增 (暫存)：{name}，請記得手動存檔"
+    # 2. 立即存檔 (修改點)
+    save_db(st.session_state['inventory'])
+    st.session_state['msg_area'] = f"✅ 已新增並存檔：{name}"
     
+    # 清空欄位
     st.session_state['add_name_input'] = ""
     st.session_state['add_attack_input'] = 100
     st.session_state['add_sp_attack_input'] = 100
@@ -170,7 +176,6 @@ def save_new_card_callback():
     st.session_state['uploader_key'] += 1
     
     st.session_state['manage_sub_mode'] = "➕ 新增卡片"
-    # st.rerun() <--- 已移除
 
 def update_card_callback():
     idx = st.session_state['edit_select_index']
@@ -195,30 +200,38 @@ def update_card_callback():
         ]
     }
     st.session_state['inventory'][idx] = updated_card
+    
+    # 自動排序
     sort_inventory(st.session_state['inventory'])
-    st.session_state['msg_area'] = f"✅ 已更新 (暫存)：{updated_card['name']}"
+    
+    # 立即存檔 (修改點)
+    save_db(st.session_state['inventory'])
+    st.session_state['msg_area'] = f"✅ 已更新並存檔：{updated_card['name']}"
     
     st.session_state['edit_select_index'] = 0
     fill_edit_fields()
-    # st.rerun() <--- 已移除
 
 def delete_card_callback():
     idx = st.session_state['edit_select_index']
     if idx < len(st.session_state['inventory']):
         removed_name = st.session_state['inventory'][idx]['name']
         st.session_state['inventory'].pop(idx)
-        st.session_state['msg_area'] = f"🗑️ 已刪除 (暫存)：{removed_name}"
+        
+        # 立即存檔 (修改點)
+        save_db(st.session_state['inventory'])
+        st.session_state['msg_area'] = f"🗑️ 已刪除並存檔：{removed_name}"
+        
         st.session_state['edit_select_index'] = 0
         fill_edit_fields()
-        # st.rerun() <--- 已移除
 
 # --- 功能 1: 卡片資料庫管理 ---
 def page_manage_cards():
     st.header("🗃️ 卡片資料庫管理")
     
+    # 雖然有自動存檔，但保留手動按鈕當作雙重保險也無妨
     st.sidebar.markdown("---")
-    st.sidebar.markdown("### 💾 資料庫存檔")
-    if st.sidebar.button("儲存所有變更至檔案", type="primary"):
+    st.sidebar.markdown("### 💾 資料庫狀態")
+    if st.sidebar.button("手動強制存檔", type="secondary"):
         save_db(st.session_state['inventory'])
     
     if 'msg_area' in st.session_state and st.session_state['msg_area']:
@@ -335,7 +348,7 @@ def page_manage_cards():
                     em2_b.selectbox("屬性", POKEMON_TYPES, key="edit_m2_type_input")
                     em2_c.selectbox("分類", MOVE_CATEGORIES, key="edit_m2_cat_input")
                     
-                    st.form_submit_button("✅ 更新資料 (暫存)", type="primary", on_click=update_card_callback)
+                    st.form_submit_button("✅ 更新資料 (並存檔)", type="primary", on_click=update_card_callback)
             
             with col_action:
                 st.subheader("危險區域")
