@@ -46,6 +46,26 @@ if 'inventory' not in st.session_state:
 if 'uploader_key' not in st.session_state:
     st.session_state['uploader_key'] = 0
 
+# --- 初始化輸入框的 Session State ---
+defaults = {
+    "add_name_input": "",
+    "add_attack_input": 100,      # 新增
+    "add_sp_attack_input": 100,   # 新增
+    "add_tag_input": "無",
+    "add_t1_input": "一般",
+    "add_t2_input": "無",
+    "add_m1_name_input": "",
+    "add_m1_type_input": "一般",
+    "add_m1_cat_input": "攻擊",   # 新增
+    "add_m2_name_input": "",
+    "add_m2_type_input": "一般",
+    "add_m2_cat_input": "攻擊",   # 新增
+    "msg_area": ""
+}
+for key, val in defaults.items():
+    if key not in st.session_state:
+        st.session_state[key] = val
+
 # --- 常數定義 ---
 POKEMON_TYPES = [
     "一般", "火", "水", "草", "電", "冰", "格鬥", "毒", "地面", 
@@ -56,6 +76,8 @@ SPECIAL_TAGS = [
     "無", "Mega進化", "Z招式", "極巨化", "太晶化", "特別聯手對戰", "雙重招式"
 ]
 
+MOVE_CATEGORIES = ["攻擊", "特攻"] # 新增招式分類
+
 # --- Callbacks: 資料庫管理 ---
 def save_new_card_callback():
     name = st.session_state['add_name_input']
@@ -63,14 +85,23 @@ def save_new_card_callback():
     
     new_card = {
         "name": name,
+        "attack": st.session_state['add_attack_input'],       # 儲存攻擊
+        "sp_attack": st.session_state['add_sp_attack_input'], # 儲存特攻
         "tag": st.session_state['add_tag_input'],
         "type": st.session_state['add_t1_input'],
         "type2": st.session_state['add_t2_input'],
         "moves": [
-            {"name": st.session_state['add_m1_name_input'], "type": st.session_state['add_m1_type_input']},
-            {"name": st.session_state['add_m2_name_input'], "type": st.session_state['add_m2_type_input']}
-        ],
-        "power": 100
+            {
+                "name": st.session_state['add_m1_name_input'], 
+                "type": st.session_state['add_m1_type_input'],
+                "category": st.session_state['add_m1_cat_input'] # 儲存分類
+            },
+            {
+                "name": st.session_state['add_m2_name_input'], 
+                "type": st.session_state['add_m2_type_input'],
+                "category": st.session_state['add_m2_cat_input'] # 儲存分類
+            }
+        ]
     }
     
     st.session_state['inventory'].append(new_card)
@@ -79,6 +110,8 @@ def save_new_card_callback():
     
     # 清空欄位
     st.session_state['add_name_input'] = ""
+    st.session_state['add_attack_input'] = 100
+    st.session_state['add_sp_attack_input'] = 100
     st.session_state['add_m1_name_input'] = ""
     st.session_state['add_m2_name_input'] = ""
     
@@ -90,14 +123,23 @@ def update_card_callback():
     idx = st.session_state['edit_select_index']
     updated_card = {
         "name": st.session_state['edit_name_input'],
+        "attack": st.session_state['edit_attack_input'],       # 更新攻擊
+        "sp_attack": st.session_state['edit_sp_attack_input'], # 更新特攻
         "tag": st.session_state['edit_tag_input'],
         "type": st.session_state['edit_t1_input'],
         "type2": st.session_state['edit_t2_input'],
         "moves": [
-            {"name": st.session_state['edit_m1_name_input'], "type": st.session_state['edit_m1_type_input']},
-            {"name": st.session_state['edit_m2_name_input'], "type": st.session_state['edit_m2_type_input']}
-        ],
-        "power": 100
+            {
+                "name": st.session_state['edit_m1_name_input'], 
+                "type": st.session_state['edit_m1_type_input'],
+                "category": st.session_state['edit_m1_cat_input']
+            },
+            {
+                "name": st.session_state['edit_m2_name_input'], 
+                "type": st.session_state['edit_m2_type_input'],
+                "category": st.session_state['edit_m2_cat_input']
+            }
+        ]
     }
     st.session_state['inventory'][idx] = updated_card
     save_db(st.session_state['inventory'])
@@ -147,17 +189,33 @@ def page_manage_cards():
             st.subheader("填寫資料")
             with st.form("add_form"):
                 st.text_input("卡片名稱", key="add_name_input")
+                
+                # 新增數值欄位
+                c_stat1, c_stat2 = st.columns(2)
+                c_stat1.number_input("⚔️ 攻擊數值", min_value=0, step=1, key="add_attack_input")
+                c_stat2.number_input("✨ 特攻數值", min_value=0, step=1, key="add_sp_attack_input")
+                
                 st.selectbox("特殊能力", SPECIAL_TAGS, key="add_tag_input")
+                
                 c1, c2 = st.columns(2)
                 c1.selectbox("屬性 1", POKEMON_TYPES, key="add_t1_input")
                 c2.selectbox("屬性 2", POKEMON_TYPES, index=len(POKEMON_TYPES)-1, key="add_t2_input")
+                
                 st.markdown("**招式資訊**")
-                mc1_a, mc1_b = st.columns([2, 1])
+                
+                # 招式 1 (增加分類)
+                st.markdown("---")
+                mc1_a, mc1_b, mc1_c = st.columns([2, 1, 1])
                 mc1_a.text_input("一般招式", placeholder="例如：影子球", key="add_m1_name_input")
                 mc1_b.selectbox("屬性", POKEMON_TYPES, key="add_m1_type_input")
-                mc2_a, mc2_b = st.columns([2, 1])
+                mc1_c.selectbox("分類", MOVE_CATEGORIES, key="add_m1_cat_input")
+                
+                # 招式 2 (增加分類)
+                mc2_a, mc2_b, mc2_c = st.columns([2, 1, 1])
                 mc2_a.text_input("強力招式", placeholder="例如：極巨幽魂", key="add_m2_name_input")
                 mc2_b.selectbox("屬性", POKEMON_TYPES, key="add_m2_type_input")
+                mc2_c.selectbox("分類", MOVE_CATEGORIES, key="add_m2_cat_input")
+                
                 st.form_submit_button("💾 新增至資料庫", type="primary", on_click=save_new_card_callback)
 
     with tab_edit:
@@ -175,9 +233,16 @@ def page_manage_cards():
                 st.subheader(f"編輯：{card_data['name']}")
                 with st.form("edit_form"):
                     st.text_input("卡片名稱", value=card_data['name'], key="edit_name_input")
+                    
+                    # 編輯數值 (相容舊資料 get 預設值)
+                    ec_s1, ec_s2 = st.columns(2)
+                    ec_s1.number_input("攻擊數值", min_value=0, step=1, value=card_data.get('attack', 100), key="edit_attack_input")
+                    ec_s2.number_input("特攻數值", min_value=0, step=1, value=card_data.get('sp_attack', 100), key="edit_sp_attack_input")
+
                     try: tag_idx = SPECIAL_TAGS.index(card_data['tag'])
                     except: tag_idx = 0
                     st.selectbox("特殊能力", SPECIAL_TAGS, index=tag_idx, key="edit_tag_input")
+                    
                     ec1, ec2 = st.columns(2)
                     try: t1_idx = POKEMON_TYPES.index(card_data['type'])
                     except: t1_idx = 0
@@ -187,17 +252,25 @@ def page_manage_cards():
                     ec2.selectbox("屬性 2", POKEMON_TYPES, index=t2_idx, key="edit_t2_input")
                     
                     st.markdown("**招式資訊**")
-                    em1_a, em1_b = st.columns([2, 1])
+                    # Move 1
+                    em1_a, em1_b, em1_c = st.columns([2, 1, 1])
                     em1_a.text_input("一般招式", value=card_data['moves'][0]['name'], key="edit_m1_name_input")
                     try: m1t_idx = POKEMON_TYPES.index(card_data['moves'][0]['type'])
                     except: m1t_idx = 0
                     em1_b.selectbox("屬性", POKEMON_TYPES, index=m1t_idx, key="edit_m1_type_input")
+                    try: m1c_idx = MOVE_CATEGORIES.index(card_data['moves'][0].get('category', '攻擊'))
+                    except: m1c_idx = 0
+                    em1_c.selectbox("分類", MOVE_CATEGORIES, index=m1c_idx, key="edit_m1_cat_input")
                     
-                    em2_a, em2_b = st.columns([2, 1])
+                    # Move 2
+                    em2_a, em2_b, em2_c = st.columns([2, 1, 1])
                     em2_a.text_input("強力招式", value=card_data['moves'][1]['name'], key="edit_m2_name_input")
                     try: m2t_idx = POKEMON_TYPES.index(card_data['moves'][1]['type'])
                     except: m2t_idx = 0
                     em2_b.selectbox("屬性", POKEMON_TYPES, index=m2t_idx, key="edit_m2_type_input")
+                    try: m2c_idx = MOVE_CATEGORIES.index(card_data['moves'][1].get('category', '攻擊'))
+                    except: m2c_idx = 0
+                    em2_c.selectbox("分類", MOVE_CATEGORIES, index=m2c_idx, key="edit_m2_cat_input")
                     
                     st.form_submit_button("✅ 更新資料", type="primary", on_click=update_card_callback)
             
@@ -210,9 +283,17 @@ def page_manage_cards():
         with st.expander("檢視完整資料庫清單"):
             display_data = []
             for item in st.session_state['inventory']:
-                moves_str = f"{item['moves'][0]['name']} / {item['moves'][1]['name']}"
+                m1 = item['moves'][0]
+                m2 = item['moves'][1]
+                moves_str = f"{m1['name']}({m1.get('category','攻擊')}) / {m2['name']}({m2.get('category','攻擊')})"
                 types_str = f"{item['type']}" + (f"/{item['type2']}" if item['type2'] != "無" else "")
-                display_data.append({"名稱": item['name'],"屬性": types_str,"特殊能力": item['tag'],"招式": moves_str})
+                display_data.append({
+                    "名稱": item['name'],
+                    "攻擊/特攻": f"{item.get('attack',100)} / {item.get('sp_attack',100)}",
+                    "屬性": types_str,
+                    "特殊能力": item['tag'],
+                    "招式": moves_str
+                })
             st.dataframe(pd.DataFrame(display_data), use_container_width=True)
             json_str = json.dumps(st.session_state['inventory'], ensure_ascii=False, indent=4)
             st.download_button("⬇️ 下載備份 (.json)", json_str, DB_FILE)
@@ -261,7 +342,6 @@ def page_battle():
             st.markdown(f"### 🥊 對手 {i+1}")
             t1 = st.selectbox(f"屬性 1", POKEMON_TYPES, index=0, key=f"op{i}_t1")
             t2 = st.selectbox(f"屬性 2", POKEMON_TYPES, index=len(POKEMON_TYPES)-1, key=f"op{i}_t2")
-            # 修正處：將標籤改為粗體
             move_type = st.selectbox(f"**招式屬性 (攻擊我方)**", POKEMON_TYPES, index=0, key=f"op{i}_move")
             opponents.append({"t1": t1, "t2": t2, "move": move_type})
 
@@ -286,6 +366,10 @@ def page_battle():
             max_risk = max(risk_factors)
             safe_risk = max_risk if max_risk > 0 else 0.1
             
+            # 取得卡片數值 (相容舊資料)
+            stat_atk = card.get('attack', 100)
+            stat_sp_atk = card.get('sp_attack', 100)
+            
             # --- 方案 A: 全力模式 (Special) ---
             max_aoe_special = 0
             best_move_special = ""
@@ -296,18 +380,23 @@ def page_battle():
                 for opp in opponents:
                     eff_sum += calculate_dual_effectiveness(move['type'], opp['t1'], opp['t2'])
                 
-                base = 120 if idx == 1 else 100
-                total = base * eff_sum
+                # 判定使用物攻還是特攻
+                cat = move.get('category', '攻擊')
+                base_stat = stat_atk if cat == '攻擊' else stat_sp_atk
+                
+                # 計算傷害：(數值) * (係數:第二招1.2倍) * (屬性剋制)
+                power_mult = 1.2 if idx == 1 else 1.0
+                total = base_stat * power_mult * eff_sum
+                
                 if total > max_aoe_special:
                     max_aoe_special = total
-                    best_move_special = f"{move['name']}({move['type']})"
+                    best_move_special = f"{move['name']}({move['type']}/{cat})"
             
             score_special = max_aoe_special / safe_risk
             tag_name = card['tag']
             if tag_name != '無':
                 score_special *= 1.2
             
-            # 修正處：語法錯誤已修復
             best_move_display_special = best_move_special
             
             candidates.append({
@@ -331,11 +420,15 @@ def page_battle():
                     for opp in opponents:
                         eff_sum += calculate_dual_effectiveness(move['type'], opp['t1'], opp['t2'])
                     
-                    base = 120 if idx == 1 else 100
-                    total = base * eff_sum
+                    cat = move.get('category', '攻擊')
+                    base_stat = stat_atk if cat == '攻擊' else stat_sp_atk
+                    
+                    power_mult = 1.2 if idx == 1 else 1.0
+                    total = base_stat * power_mult * eff_sum
+                    
                     if total > max_aoe_normal:
                         max_aoe_normal = total
-                        best_move_normal = f"{move['name']}({move['type']})"
+                        best_move_normal = f"{move['name']}({move['type']}/{cat})"
                 
                 score_normal = max_aoe_normal / safe_risk
                 
@@ -352,7 +445,7 @@ def page_battle():
         # 排序
         candidates.sort(key=lambda x: x['score'], reverse=True)
 
-        # 挑選隊伍 (Greedy)
+        # 挑選隊伍
         final_team = []
         used_names = set()
         used_tags = set()
