@@ -77,7 +77,6 @@ def save_new_card_callback():
     save_db(st.session_state['inventory'])
     st.session_state['msg_area'] = f"✅ 已新增：{name}"
     
-    # 清空欄位
     st.session_state['add_name_input'] = ""
     st.session_state['add_m1_name_input'] = ""
     st.session_state['add_m2_name_input'] = ""
@@ -217,7 +216,7 @@ def page_manage_cards():
             json_str = json.dumps(st.session_state['inventory'], ensure_ascii=False, indent=4)
             st.download_button("⬇️ 下載備份 (.json)", json_str, DB_FILE)
 
-# --- 功能 2: 對戰分析 (AOE 總傷 + Tag 限制升級版) ---
+# --- 功能 2: 對戰分析 (Tag 退化機制版) ---
 TYPE_CHART = {
     "一般": {"岩石": 0.5, "幽靈": 0, "鋼": 0.5},
     "火": {"草": 2, "冰": 2, "蟲": 2, "鋼": 2, "水": 0.5, "火": 0.5, "岩石": 0.5, "龍": 0.5},
@@ -251,7 +250,7 @@ def calculate_dual_effectiveness(attacker_type, def_t1, def_t2):
 
 def page_battle():
     st.header("⚔️ 對戰分析 (3 vs 3)")
-    st.info("AI 將計算能對「全體對手」造成最大總傷害，且符合特殊能力限制的最佳隊伍。")
+    st.info("AI 將計算最佳 AOE 火力。若特殊能力重複，較弱的寶可夢將自動改用一般招式出戰。")
     
     opponents = []
     cols = st.columns(3)
@@ -271,94 +270,123 @@ def page_battle():
             st.error("卡匣是空的！請先建立資料。")
             return
 
-        # 1. 計算所有候選卡片的評分
         candidates = []
+        
+        # 針對每一張卡片，產生「兩種」候選方案：
+        # 1. 全力模式 (使用 Tag + 加成)
+        # 2. 保留模式 (不使用 Tag，只用數值)
+        
         for card in st.session_state['inventory']:
-            # A. 攻擊分數 (AOE: 同時打三隻的總效益)
-            best_move_display = ""
-            max_aoe_damage = 0
             
-            for idx, move in enumerate(card['moves']):
-                if not move['name']: continue
-                
-                # 計算這招打 Opp1 + Opp2 + Opp3 的總倍率
-                total_effectiveness_sum = 0
-                for opp in opponents:
-                    eff = calculate_dual_effectiveness(move['type'], opp['t1'], opp['t2'])
-                    total_effectiveness_sum += eff
-                
-                # 簡單威力加權 (第二招通常較強)
-                base_power = 120 if idx == 1 else 100
-                total_move_damage = base_power * total_effectiveness_sum
-                
-                if total_move_damage > max_aoe_damage:
-                    max_aoe_damage = total_move_damage
-                    best_move_display = f"{move['name']}({move['type']})"
-
-            # B. 防禦分數 (Risk: 取被三隻打最痛的那一下)
+            # --- 共用計算 (防禦風險) ---
             risk_factors = []
             for opp in opponents:
                 my_t1 = card['type']
                 my_t2 = card.get('type2', '無')
                 dmg_taken = calculate_dual_effectiveness(opp['move'], my_t1, my_t2)
                 risk_factors.append(dmg_taken)
-            
             max_risk = max(risk_factors)
-            # 避免除以 0
             safe_risk = max_risk if max_risk > 0 else 0.1
             
-            # C. 綜合評分 = 總傷害 / 風險
-            final_score = max_aoe_damage / safe_risk
+            # --- 方案 A: 全力模式 (Special) ---
+            # 找最強的招式 (通常是第二招 AOE)
+            max_aoe_special = 0
+            best_move_special = ""
             
-            # 特殊能力微幅加分 (作為平手時的權重，主要還是看 Tag 限制)
-            if card['tag'] != '無': final_score *= 1.1
-
+            for idx, move in enumerate(card['moves']):
+                if not move['name']: continue
+                eff_sum = 0
+                for opp in opponents:
+                    eff_sum += calculate_dual_effectiveness(move['type'], opp['t1'], opp['t2'])
+                
+                # 特殊招式加權 (假設第二招是特殊)
+                base = 120 if idx == 1 else 100
+                total = base * eff_sum
+                if total > max_aoe_special:
+                    max_aoe_special = total
+                    best_move_special = f"{move['name']}({move['type']})"
+            
+            # 若有 Tag，分數加成 1.2
+            score_special = max_aoe_special / safe_risk
+            tag_name = card['tag']
+            if tag_name != '無':
+                score_special *= 1.2
+                
             candidates.append({
-                "data": card,
-                "score": final_score,
-                "move": best_move_display,
+                "name": card['name'],
+                "use_tag": tag_name, # 這裡記錄要佔用的 Tag
+                "score": score_special,
+                "move": best_move_display_special := best_move_special,
+                "aoe_dmg": max_aoe_special * (1.2 if tag_name != '無' else 1.0),
                 "risk": max_risk,
-                "total_dmg": max_aoe_damage
+                "mode": "special"
             })
+            
+            # --- 方案 B: 保留模式 (Normal) ---
+            # 如果這張卡本來就沒 Tag，方案 B 跟 A 是一樣的，可以跳過
+            # 只有當卡片有 Tag 時，我們才需要產生一個「不使用 Tag」的備案
+            if tag_name != '無':
+                max_aoe_normal = 0
+                best_move_normal = ""
+                
+                # 假設如果不使用特殊能力，可能威力會受限，或者只能用第一招？
+                # 這裡假設：不使用 Tag 依然可以用招式，只是沒有 1.2 倍加成
+                for idx, move in enumerate(card['moves']):
+                    if not move['name']: continue
+                    eff_sum = 0
+                    for opp in opponents:
+                        eff_sum += calculate_dual_effectiveness(move['type'], opp['t1'], opp['t2'])
+                    
+                    base = 120 if idx == 1 else 100
+                    total = base * eff_sum
+                    if total > max_aoe_normal:
+                        max_aoe_normal = total
+                        best_move_normal = f"{move['name']}({move['type']})"
+                
+                score_normal = max_aoe_normal / safe_risk
+                
+                candidates.append({
+                    "name": card['name'],
+                    "use_tag": "無", # 強制標記為無，代表不佔用
+                    "score": score_normal, # 沒加成
+                    "move": best_move_normal,
+                    "aoe_dmg": max_aoe_normal,
+                    "risk": max_risk,
+                    "mode": "normal"
+                })
 
-        # 2. 排序：分數高到低
+        # 2. 排序：所有方案混在一起比分數
         candidates.sort(key=lambda x: x['score'], reverse=True)
 
-        # 3. 挑選隊伍 (嚴格執行特殊能力不重複)
+        # 3. 挑選隊伍 (Greedy)
         final_team = []
+        used_names = set()
         used_tags = set()
         
         for cand in candidates:
             if len(final_team) >= 3: break
             
-            tag = cand['data']['tag']
+            # 規則 1: 同一隻寶可夢不能上場兩次
+            if cand['name'] in used_names:
+                continue
             
-            # 檢查 Tag 是否已用過 (且不是'無')
+            # 規則 2: Tag 衝突檢查
+            # 如果這個方案要用 Tag (不是'無')，且該 Tag 已經被用過了 -> 跳過 (會自動輪到它的 Normal 方案)
+            tag = cand['use_tag']
             if tag != '無' and tag in used_tags:
-                continue # 跳過這隻，找下一隻
+                continue
             
+            # 錄取
             final_team.append(cand)
-            if tag != '無': used_tags.add(tag)
-            
-        # 若隊伍未滿 3 隻 (因為 Tag 衝突)，用剩下的 '無' Tag 或其他非衝突卡填補
-        if len(final_team) < 3:
-            for cand in candidates:
-                if len(final_team) >= 3: break
-                
-                # 確保不重複加入同一張卡 (簡單用名稱判斷，實務可用 ID)
-                if any(existing['data']['name'] == cand['data']['name'] for existing in final_team):
-                    continue
-
-                tag = cand['data']['tag']
-                # 再次檢查 Tag (針對後補的卡)
-                if tag != '無' and tag in used_tags:
-                    continue
-                
-                final_team.append(cand)
-                if tag != '無': used_tags.add(tag)
+            used_names.add(cand['name'])
+            if tag != '無':
+                used_tags.add(tag)
 
         # 顯示結果
         st.subheader("🏆 推薦出戰陣容")
+        if len(final_team) < 3:
+            st.warning("庫存寶可夢不足 3 隻，僅列出可用名單。")
+            
         cols = st.columns(3)
         for i, p in enumerate(final_team):
             with cols[i]:
@@ -367,15 +395,18 @@ def page_battle():
                 elif p['risk'] <= 0.5: risk_text = "🛡️ 堅硬"
                 elif p['risk'] == 0: risk_text = "✨ 免疫"
                 
-                # 計算對三隻的總打擊效能顯示
-                dmg_score = int(p['total_dmg'])
+                # 顯示 Tag 狀態
+                tag_display = p['use_tag']
+                if p['mode'] == 'normal' and tag_display == '無':
+                     # 如果原本有 Tag 但被降級，提示一下
+                     tag_display = "一般招式 (保留特殊能力)"
                 
                 st.success(f"""
                 **第 {i+1} 棒**
-                ### {p['data']['name']}
-                * **能力**: {p['data']['tag']}
+                ### {p['name']}
+                * **模式**: {tag_display}
                 * **建議**: {p['move']}
-                * **AOE 總火力**: {dmg_score}
+                * **AOE 火力**: {int(p['aoe_dmg'])}
                 * **防禦**: {risk_text} (受傷x{p['risk']})
                 """)
 
