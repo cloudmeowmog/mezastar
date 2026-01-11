@@ -8,7 +8,30 @@ import os
 # --- 設定頁面 ---
 st.set_page_config(page_title="Mezastar 檔案室", layout="wide", page_icon="🗃️")
 
-# --- API Key 管理 (為了對戰分析保留) ---
+# --- 設定資料庫檔案名稱 ---
+DB_FILE = "mezastar_db.json"
+
+# --- 函式：讀取與寫入資料庫 ---
+def load_db():
+    """程式啟動時，從同目錄下的 json 檔案讀取資料"""
+    if os.path.exists(DB_FILE):
+        try:
+            with open(DB_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            st.error(f"讀取資料庫失敗: {e}")
+            return []
+    return []
+
+def save_db(data):
+    """將資料寫入同目錄下的 json 檔案"""
+    try:
+        with open(DB_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        st.error(f"寫入資料庫失敗: {e}")
+
+# --- API Key 管理 ---
 if "gemini_api_key" in st.secrets:
     api_key = st.secrets["gemini_api_key"]
 else:
@@ -17,15 +40,15 @@ else:
 if api_key:
     genai.configure(api_key=api_key)
 
-# --- 資料庫初始化 ---
+# --- 資料庫初始化 (關鍵修改：啟動時嘗試讀取檔案) ---
 if 'inventory' not in st.session_state:
-    st.session_state['inventory'] = []
+    st.session_state['inventory'] = load_db()
 
 # --- 上傳元件重置金鑰初始化 ---
 if 'uploader_key' not in st.session_state:
     st.session_state['uploader_key'] = 0
 
-# --- 常數定義 (已修正: 鬼 -> 幽靈) ---
+# --- 常數定義 ---
 POKEMON_TYPES = [
     "一般", "火", "水", "草", "電", "冰", "格鬥", "毒", "地面", 
     "飛行", "超能力", "蟲", "岩石", "幽靈", "龍", "惡", "鋼", "妖精", "無"
@@ -44,7 +67,6 @@ def page_add_card():
     with col_preview:
         st.subheader("1. 圖片上傳")
         
-        # 使用動態 Key，確保每次新增後上傳元件會重置
         current_key = st.session_state['uploader_key']
         
         front_file = st.file_uploader(
@@ -59,29 +81,18 @@ def page_add_card():
             key=f"u_back_{current_key}"
         )
         
-        # --- 自動讀取檔名邏輯 (選取圖片當下即觸發) ---
         if front_file:
             st.image(Image.open(front_file), caption="正面預覽", use_container_width=True)
             
-            # 判斷是否為「新選取」的圖片
-            # 如果 session 中紀錄的檔名與現在不同，代表使用者剛選了新圖
             if 'last_processed_file' not in st.session_state or st.session_state['last_processed_file'] != front_file.name:
-                
-                # 1. 解析檔名
                 filename = os.path.splitext(front_file.name)[0]
-                # 去除常見後綴
                 for suffix in ["_前", "_front", "正面"]:
                     if filename.endswith(suffix):
                         filename = filename.replace(suffix, "")
                         break
                 
-                # 2. 立即更新輸入框的 Session State
                 st.session_state['card_name_input'] = filename
-                
-                # 3. 記錄此檔案已處理 (避免無窮迴圈)
                 st.session_state['last_processed_file'] = front_file.name
-                
-                # 4. ⚡️ 強制刷新頁面：這會讓右邊的表單立刻顯示新名字
                 st.rerun()
 
         if back_file:
@@ -91,10 +102,7 @@ def page_add_card():
         st.subheader("2. 資料編輯")
         
         with st.form("card_form", clear_on_submit=True):
-            # 卡片名稱 (綁定 key 讓左邊的邏輯可以控制它)
             st.text_input("卡片名稱", key="card_name_input")
-            
-            # 特殊能力
             st.selectbox("特殊能力", SPECIAL_TAGS, key="tag_input")
             
             st.markdown("---")
@@ -106,20 +114,17 @@ def page_add_card():
             st.markdown("---")
             st.markdown("**招式資訊**")
             
-            # 招式 1
             mc1_a, mc1_b = st.columns([2, 1])
             mc1_a.text_input("一般招式名稱", placeholder="例如：影子球", key="m1_name_input")
             mc1_b.selectbox("屬性", POKEMON_TYPES, key="m1_type_input")
             
-            # 招式 2
             mc2_a, mc2_b = st.columns([2, 1])
             mc2_a.text_input("特殊/強力招式名稱", placeholder="例如：極巨幽魂", key="m2_name_input")
             mc2_b.selectbox("屬性", POKEMON_TYPES, key="m2_type_input")
             
-            submitted = st.form_submit_button("💾 加入資料庫", type="primary")
+            submitted = st.form_submit_button("💾 加入資料庫 (自動存檔)", type="primary")
             
             if submitted:
-                # 取得資料
                 name = st.session_state.get('card_name_input', '未命名')
                 
                 new_card = {
@@ -135,23 +140,22 @@ def page_add_card():
                 }
                 
                 st.session_state['inventory'].append(new_card)
-                st.success(f"已新增：{name}")
                 
-                # --- 重置邏輯 ---
-                # 1. 清除上傳紀錄
+                # --- 關鍵修改：立即寫入硬碟 ---
+                save_db(st.session_state['inventory'])
+                
+                st.success(f"已新增並儲存：{name}")
+                
                 if 'last_processed_file' in st.session_state:
                     del st.session_state['last_processed_file']
                 
-                # 2. 更換上傳元件的 ID (強制清空上傳框)
                 st.session_state['uploader_key'] += 1
-                
-                # 3. 刷新頁面
                 st.rerun()
 
     # 清單列表
     if st.session_state['inventory']:
         st.markdown("---")
-        st.subheader(f"📋 目前卡匣 ({len(st.session_state['inventory'])} 張)")
+        st.subheader(f"📋 目前卡匣 ({len(st.session_state['inventory'])} 張) - 已自動載入")
         
         display_data = []
         for item in st.session_state['inventory']:
@@ -167,11 +171,11 @@ def page_add_card():
             
         st.dataframe(pd.DataFrame(display_data), use_container_width=True)
         
-        json_str = json.dumps(st.session_state['inventory'], ensure_ascii=False)
-        st.download_button("⬇️ 下載資料庫備份 (.json)", json_str, "mezastar_db.json")
+        # 仍然保留手動下載功能，以防萬一
+        json_str = json.dumps(st.session_state['inventory'], ensure_ascii=False, indent=4)
+        st.download_button("⬇️ 手動下載備份 (.json)", json_str, DB_FILE)
 
 # --- 功能 2: 對戰分析 ---
-# 屬性表 (已將 '鬼' 修正為 '幽靈')
 TYPE_CHART = {
     "一般": {"岩石": 0.5, "幽靈": 0, "鋼": 0.5},
     "火": {"草": 2, "冰": 2, "蟲": 2, "鋼": 2, "水": 0.5, "火": 0.5},
@@ -186,7 +190,7 @@ TYPE_CHART = {
     "超能力": {"格鬥": 2, "毒": 2, "超能力": 0.5, "惡": 0},
     "蟲": {"草": 2, "超能力": 2, "惡": 2, "火": 0.5, "飛行": 0.5, "幽靈": 0.5},
     "岩石": {"火": 2, "冰": 2, "飛行": 2, "蟲": 2, "格鬥": 0.5, "地面": 0.5},
-    "幽靈": {"超能力": 2, "幽靈": 2, "一般": 0, "惡": 0.5}, # 鬼剋鬼
+    "幽靈": {"超能力": 2, "幽靈": 2, "一般": 0, "惡": 0.5},
     "龍": {"龍": 2, "鋼": 0.5, "妖精": 0},
     "惡": {"幽靈": 2, "超能力": 2, "格鬥": 0.5, "妖精": 0.5},
     "鋼": {"冰": 2, "岩石": 2, "妖精": 2, "火": 0.5, "水": 0.5},
@@ -226,7 +230,6 @@ def page_battle():
                                 prompt = "辨識畫面中對手的主要屬性(例如'火'或'水')，只回傳屬性名稱純文字。如果是'鬼'屬性請回傳'幽靈'。"
                                 res = model.generate_content([prompt, img])
                                 detected = res.text.strip().replace("屬性", "")
-                                # 修正 AI 可能回傳舊稱的情況
                                 if detected == "鬼": detected = "幽靈"
                                 
                                 if detected in TYPE_CHART:
