@@ -46,6 +46,21 @@ if 'inventory' not in st.session_state:
 if 'uploader_key' not in st.session_state:
     st.session_state['uploader_key'] = 0
 
+# --- 初始化輸入框的 Session State (避免 KeyError) ---
+defaults = {
+    "card_name_input": "",
+    "tag_input": "無",
+    "t1_input": "一般",
+    "t2_input": "無",
+    "m1_name_input": "",
+    "m1_type_input": "一般",
+    "m2_name_input": "",
+    "m2_type_input": "一般"
+}
+for key, val in defaults.items():
+    if key not in st.session_state:
+        st.session_state[key] = val
+
 # --- 常數定義 ---
 POKEMON_TYPES = [
     "一般", "火", "水", "草", "電", "冰", "格鬥", "毒", "地面", 
@@ -65,6 +80,7 @@ def page_add_card():
     with col_preview:
         st.subheader("1. 圖片上傳")
         
+        # 使用動態 Key，確保每次新增後上傳元件會重置
         current_key = st.session_state['uploader_key']
         
         front_file = st.file_uploader(
@@ -79,18 +95,27 @@ def page_add_card():
             key=f"u_back_{current_key}"
         )
         
+        # --- 自動讀取檔名邏輯 ---
         if front_file:
             st.image(Image.open(front_file), caption="正面預覽", use_container_width=True)
             
+            # 檢查是否為新圖片
             if 'last_processed_file' not in st.session_state or st.session_state['last_processed_file'] != front_file.name:
+                
+                # 解析檔名
                 filename = os.path.splitext(front_file.name)[0]
                 for suffix in ["_前", "_front", "正面"]:
                     if filename.endswith(suffix):
                         filename = filename.replace(suffix, "")
                         break
                 
+                # 更新輸入框狀態
                 st.session_state['card_name_input'] = filename
+                
+                # 標記已處理
                 st.session_state['last_processed_file'] = front_file.name
+                
+                # 強制刷新
                 st.rerun()
 
         if back_file:
@@ -99,7 +124,8 @@ def page_add_card():
     with col_edit:
         st.subheader("2. 資料編輯")
         
-        with st.form("card_form", clear_on_submit=True):
+        # 移除了 clear_on_submit=True，改用手動清空
+        with st.form("card_form"):
             st.text_input("卡片名稱", key="card_name_input")
             st.selectbox("特殊能力", SPECIAL_TAGS, key="tag_input")
             
@@ -123,28 +149,44 @@ def page_add_card():
             submitted = st.form_submit_button("💾 加入資料庫 (自動存檔)", type="primary")
             
             if submitted:
-                name = st.session_state.get('card_name_input', '未命名')
+                # 取得目前輸入框的值
+                name = st.session_state['card_name_input']
+                if not name: name = "未命名"
                 
                 new_card = {
                     "name": name,
-                    "tag": st.session_state.tag_input,
-                    "type": st.session_state.t1_input,
-                    "type2": st.session_state.t2_input,
+                    "tag": st.session_state['tag_input'],
+                    "type": st.session_state['t1_input'],
+                    "type2": st.session_state['t2_input'],
                     "moves": [
-                        {"name": st.session_state.m1_name_input, "type": st.session_state.m1_type_input},
-                        {"name": st.session_state.m2_name_input, "type": st.session_state.m2_type_input}
+                        {"name": st.session_state['m1_name_input'], "type": st.session_state['m1_type_input']},
+                        {"name": st.session_state['m2_name_input'], "type": st.session_state['m2_type_input']}
                     ],
                     "power": 100
                 }
                 
+                # 存檔
                 st.session_state['inventory'].append(new_card)
                 save_db(st.session_state['inventory'])
                 st.success(f"已新增並儲存：{name}")
                 
+                # --- 強制清空暫存狀態 (解決名稱卡住的問題) ---
+                st.session_state['card_name_input'] = ""
+                st.session_state['tag_input'] = "無"
+                st.session_state['t1_input'] = "一般"
+                st.session_state['t2_input'] = "無"
+                st.session_state['m1_name_input'] = ""
+                st.session_state['m1_type_input'] = "一般"
+                st.session_state['m2_name_input'] = ""
+                st.session_state['m2_type_input'] = "一般"
+                
+                # 清除檔案處理紀錄
                 if 'last_processed_file' in st.session_state:
                     del st.session_state['last_processed_file']
                 
+                # 重置上傳按鈕
                 st.session_state['uploader_key'] += 1
+                
                 st.rerun()
 
     if st.session_state['inventory']:
@@ -168,7 +210,7 @@ def page_add_card():
         json_str = json.dumps(st.session_state['inventory'], ensure_ascii=False, indent=4)
         st.download_button("⬇️ 手動下載備份 (.json)", json_str, DB_FILE)
 
-# --- 功能 2: 對戰分析 (全新升級版) ---
+# --- 功能 2: 對戰分析 ---
 TYPE_CHART = {
     "一般": {"岩石": 0.5, "幽靈": 0, "鋼": 0.5},
     "火": {"草": 2, "冰": 2, "蟲": 2, "鋼": 2, "水": 0.5, "火": 0.5, "岩石": 0.5, "龍": 0.5},
@@ -191,13 +233,11 @@ TYPE_CHART = {
 }
 
 def get_effectiveness(attacker_type, defender_type):
-    """計算單一屬性攻擊對單一屬性防禦的倍率"""
     if defender_type == "無" or attacker_type == "無": return 1.0
     if attacker_type not in TYPE_CHART: return 1.0
     return TYPE_CHART[attacker_type].get(defender_type, 1.0)
 
 def calculate_dual_effectiveness(attacker_type, def_t1, def_t2):
-    """計算對雙屬性防禦的總倍率"""
     eff1 = get_effectiveness(attacker_type, def_t1)
     eff2 = get_effectiveness(attacker_type, def_t2)
     return eff1 * eff2
@@ -206,7 +246,6 @@ def page_battle():
     st.header("⚔️ 對戰分析 (3 vs 3)")
     st.info("請輸入三位對手的屬性與招式，AI 將計算攻防一體最佳陣容。")
     
-    # 建立三個對手的輸入區塊
     opponents = []
     cols = st.columns(3)
     
@@ -214,7 +253,7 @@ def page_battle():
         with cols[i]:
             st.markdown(f"### 🥊 對手 {i+1}")
             t1 = st.selectbox(f"屬性 1", POKEMON_TYPES, index=0, key=f"op{i}_t1")
-            t2 = st.selectbox(f"屬性 2", POKEMON_TYPES, index=len(POKEMON_TYPES)-1, key=f"op{i}_t2") # 預設無
+            t2 = st.selectbox(f"屬性 2", POKEMON_TYPES, index=len(POKEMON_TYPES)-1, key=f"op{i}_t2")
             move_type = st.selectbox(f"招式屬性 (攻擊我方)", POKEMON_TYPES, index=0, key=f"op{i}_move")
             opponents.append({"t1": t1, "t2": t2, "move": move_type})
 
@@ -226,21 +265,13 @@ def page_battle():
             return
 
         recs = []
-        
-        # 針對每一張我的卡片進行評分
         for card in st.session_state['inventory']:
             total_offense_score = 0
-            total_defense_penalty = 0
             best_move_display = ""
-            
-            # 1. 攻擊分數 (我打對手)
-            # 我們假設這張卡片會對上這三隻對手，取平均效益或最大效益
-            # 這裡採取「累積效益」，因為一場戰鬥可能會打多隻
             
             my_best_move_idx = 0
             my_best_move_power = 0
             
-            # 先找出這張卡哪一招最強 (針對這三個對手的平均表現)
             for idx, move in enumerate(card['moves']):
                 if not move['name']: continue
                 
@@ -249,7 +280,6 @@ def page_battle():
                     eff = calculate_dual_effectiveness(move['type'], opp['t1'], opp['t2'])
                     move_score_sum += eff
                 
-                # 簡單加權：第二招通常比較痛
                 base_power = 120 if idx == 1 else 100
                 current_power = base_power * move_score_sum
                 
@@ -258,32 +288,19 @@ def page_battle():
                     my_best_move_idx = idx
                     best_move_display = f"{move['name']}({move['type']})"
 
-            # 最終攻擊分數
             total_offense_score = my_best_move_power
             
-            # 2. 防禦分數 (對手打我)
-            # 計算三個對手的招式打我有沒有特別痛
-            # 數值越小代表防禦越好 (受傷倍率)
             defense_multipliers = []
             for opp in opponents:
-                # 我方防禦屬性
                 my_t1 = card['type']
                 my_t2 = card.get('type2', '無')
                 dmg_taken = calculate_dual_effectiveness(opp['move'], my_t1, my_t2)
                 defense_multipliers.append(dmg_taken)
             
-            # 取最大受傷倍率來當作風險 (避免被秒殺)
             max_risk = max(defense_multipliers)
-            
-            # 3. 綜合評分公式
-            # 分數 = 攻擊力 / 風險係數
-            # 如果風險是 4倍(極大)，分數會除以4；如果是 0.25(減傷)，分數會乘以4
-            # 為了避免除以0 (免疫)，將0視為極小的數 0.1
             risk_factor = max_risk if max_risk > 0 else 0.1
-            
             final_score = total_offense_score / risk_factor
             
-            # 特殊能力加權
             if card['tag'] != '無': final_score *= 1.2
             
             recs.append({
@@ -294,10 +311,8 @@ def page_battle():
                 "risk": max_risk
             })
 
-        # 排序
         recs.sort(key=lambda x: x['score'], reverse=True)
 
-        # 挑選不重複 Tag 的前三名
         final_team = []
         used_tags = set()
         
@@ -307,15 +322,12 @@ def page_battle():
             final_team.append(r)
             if r['tag'] != '無': used_tags.add(r['tag'])
             
-        # 補滿
         if len(final_team) < 3:
             for r in recs:
                 if len(final_team) >= 3: break
                 if r not in final_team: final_team.append(r)
 
-        # 顯示結果
         st.subheader("🏆 推薦出戰陣容")
-        
         cols = st.columns(3)
         for i, p in enumerate(final_team):
             with cols[i]:
@@ -326,9 +338,7 @@ def page_battle():
                 
                 st.success(f"""
                 **第 {i+1} 棒**
-                
                 ### {p['name']}
-                
                 * **能力**: {p['tag']}
                 * **建議招式**: {p['move']}
                 * **防禦評估**: {risk_text} (最大受傷 x{p['risk']})
