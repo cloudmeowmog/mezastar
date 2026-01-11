@@ -11,7 +11,7 @@ st.set_page_config(page_title="Mezastar 檔案室", layout="wide", page_icon="�
 # --- 設定資料庫檔案名稱 ---
 DB_FILE = "mezastar_db.json"
 
-# --- Helper: 排序資料庫 (關鍵功能) ---
+# --- Helper: 排序資料庫 ---
 def sort_inventory(data):
     """依照名稱 (name) 對資料庫進行 A-Z 排序"""
     if data:
@@ -24,7 +24,6 @@ def load_db():
         try:
             with open(DB_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                # 載入時立即排序，確保順序正確
                 return sort_inventory(data)
         except Exception as e:
             st.error(f"讀取資料庫失敗: {e}")
@@ -33,7 +32,6 @@ def load_db():
 
 def save_db(data):
     try:
-        # 存檔前也確保是排序過的 (雖然通常操作時已經排過，但多一層保險)
         sort_inventory(data)
         with open(DB_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
@@ -130,7 +128,7 @@ def fill_edit_fields():
     st.session_state['edit_m2_type_input'] = m2['type']
     st.session_state['edit_m2_cat_input'] = m2.get('category', '攻擊')
 
-# --- Callbacks: 資料庫管理 ---
+# --- Callbacks: 資料庫管理 (已移除 st.rerun) ---
 def save_new_card_callback():
     name = st.session_state['add_name_input']
     if not name: name = "未命名"
@@ -157,13 +155,10 @@ def save_new_card_callback():
     }
     
     st.session_state['inventory'].append(new_card)
-    
-    # 自動排序
     sort_inventory(st.session_state['inventory'])
     
     st.session_state['msg_area'] = f"✅ 已新增 (暫存)：{name}，請記得手動存檔"
     
-    # 清空欄位
     st.session_state['add_name_input'] = ""
     st.session_state['add_attack_input'] = 100
     st.session_state['add_sp_attack_input'] = 100
@@ -175,7 +170,7 @@ def save_new_card_callback():
     st.session_state['uploader_key'] += 1
     
     st.session_state['manage_sub_mode'] = "➕ 新增卡片"
-    st.rerun()
+    # st.rerun() <--- 已移除
 
 def update_card_callback():
     idx = st.session_state['edit_select_index']
@@ -200,27 +195,22 @@ def update_card_callback():
         ]
     }
     st.session_state['inventory'][idx] = updated_card
-    
-    # 自動排序
     sort_inventory(st.session_state['inventory'])
-    
     st.session_state['msg_area'] = f"✅ 已更新 (暫存)：{updated_card['name']}"
     
     st.session_state['edit_select_index'] = 0
     fill_edit_fields()
-    st.rerun()
+    # st.rerun() <--- 已移除
 
 def delete_card_callback():
     idx = st.session_state['edit_select_index']
     if idx < len(st.session_state['inventory']):
         removed_name = st.session_state['inventory'][idx]['name']
         st.session_state['inventory'].pop(idx)
-        
         st.session_state['msg_area'] = f"🗑️ 已刪除 (暫存)：{removed_name}"
-        
         st.session_state['edit_select_index'] = 0
         fill_edit_fields()
-        st.rerun()
+        # st.rerun() <--- 已移除
 
 # --- 功能 1: 卡片資料庫管理 ---
 def page_manage_cards():
@@ -301,7 +291,7 @@ def page_manage_cards():
             st.info("資料庫目前是空的。")
         else:
             st.subheader("🔍 選擇要管理的卡片")
-            # 在這裡確保 inventory 是排序過的 (以防萬一)
+            # 確保順序
             sort_inventory(st.session_state['inventory'])
             
             card_options = [f"{i+1}. {c['name']} ({c['tag']})" for i, c in enumerate(st.session_state['inventory'])]
@@ -354,9 +344,7 @@ def page_manage_cards():
     if st.session_state['inventory']:
         st.markdown("---")
         with st.expander("檢視完整資料庫清單", expanded=True):
-            # 確保顯示前也是排序的
             sort_inventory(st.session_state['inventory'])
-            
             display_data = []
             for item in st.session_state['inventory']:
                 m1 = item['moves'][0]
@@ -371,10 +359,8 @@ def page_manage_cards():
                     "招式": moves_str
                 })
             
-            # 轉換為 DataFrame 並設定 Index 從 1 開始
             df = pd.DataFrame(display_data)
-            df.index = range(1, len(df) + 1) # <--- 關鍵修正：索引從 1 開始
-            
+            df.index = range(1, len(df) + 1)
             st.dataframe(df, use_container_width=True)
             
             json_str = json.dumps(st.session_state['inventory'], ensure_ascii=False, indent=4)
