@@ -1,20 +1,23 @@
 [
     {
         "name": "1-3-006_捷拉奧拉",
+        "attack": 134,
+        "sp_attack": 123,
         "tag": "Z招式",
         "type": "電",
         "type2": "無",
         "moves": [
             {
                 "name": "等離子閃電拳",
-                "type": "電"
+                "type": "電",
+                "category": "攻擊"
             },
             {
                 "name": "終極伏特狂雷閃",
-                "type": "電"
+                "type": "電",
+                "category": "攻擊"
             }
-        ],
-        "power": 100
+        ]
     },
     {
         "name": "1-4-005_白馬蕾冠王",
@@ -35,37 +38,43 @@
     },
     {
         "name": "1-3-005_甲賀忍蛙",
+        "attack": 115,
+        "sp_attack": 124,
         "tag": "Z招式",
         "type": "水",
         "type2": "惡",
         "moves": [
             {
                 "name": "惡之波動",
-                "type": "惡"
+                "type": "惡",
+                "category": "特攻"
             },
             {
                 "name": "黑洞吞噬萬物滅",
-                "type": "惡"
+                "type": "惡",
+                "category": "特攻"
             }
-        ],
-        "power": 100
+        ]
     },
     {
         "name": "1-3-008_凱路迪歐",
+        "attack": 91,
+        "sp_attack": 159,
         "tag": "極巨化",
         "type": "水",
         "type2": "格鬥",
         "moves": [
             {
                 "name": "神秘之劍",
-                "type": "格鬥"
+                "type": "格鬥",
+                "category": "特攻"
             },
             {
                 "name": "極巨拳鬥",
-                "type": "格鬥"
+                "type": "格鬥",
+                "category": "特攻"
             }
-        ],
-        "power": 100
+        ]
     },
     {
         "name": "1-3-009_長毛巨魔",
