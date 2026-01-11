@@ -115,5 +115,25 @@
                 "category": "特攻"
             }
         ]
+    },
+    {
+        "name": "1-4-007_謎擬Q",
+        "attack": 111,
+        "sp_attack": 64,
+        "tag": "Z招式",
+        "type": "幽靈",
+        "type2": "妖精",
+        "moves": [
+            {
+                "name": "嬉鬧",
+                "type": "妖精",
+                "category": "攻擊"
+            },
+            {
+                "name": "親密無間大亂揍",
+                "type": "妖精",
+                "category": "攻擊"
+            }
+        ]
     }
 ]
