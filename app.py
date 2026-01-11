@@ -46,22 +46,6 @@ if 'inventory' not in st.session_state:
 if 'uploader_key' not in st.session_state:
     st.session_state['uploader_key'] = 0
 
-# --- 初始化輸入框的 Session State (避免 KeyError) ---
-defaults = {
-    "card_name_input": "",
-    "tag_input": "無",
-    "t1_input": "一般",
-    "t2_input": "無",
-    "m1_name_input": "",
-    "m1_type_input": "一般",
-    "m2_name_input": "",
-    "m2_type_input": "一般",
-    "save_success_msg": "" # 用來顯示存檔成功的訊息
-}
-for key, val in defaults.items():
-    if key not in st.session_state:
-        st.session_state[key] = val
-
 # --- 常數定義 ---
 POKEMON_TYPES = [
     "一般", "火", "水", "草", "電", "冰", "格鬥", "毒", "地面", 
@@ -72,148 +56,215 @@ SPECIAL_TAGS = [
     "無", "Mega進化", "Z招式", "極巨化", "太晶化", "特別聯手對戰", "雙重招式"
 ]
 
-# --- 關鍵修正：存檔的回呼函式 (Callback) ---
-# 這個函式會在按鈕按下的瞬間執行，早於畫面重新渲染，所以可以安全地清空欄位
-def save_card_callback():
-    # 1. 取得目前輸入框的值
-    name = st.session_state['card_name_input']
+# --- Callback: 新增卡片存檔 ---
+def save_new_card_callback():
+    name = st.session_state['add_name_input']
     if not name: name = "未命名"
     
-    # 2. 建立新卡片資料
     new_card = {
         "name": name,
-        "tag": st.session_state['tag_input'],
-        "type": st.session_state['t1_input'],
-        "type2": st.session_state['t2_input'],
+        "tag": st.session_state['add_tag_input'],
+        "type": st.session_state['add_t1_input'],
+        "type2": st.session_state['add_t2_input'],
         "moves": [
-            {"name": st.session_state['m1_name_input'], "type": st.session_state['m1_type_input']},
-            {"name": st.session_state['m2_name_input'], "type": st.session_state['m2_type_input']}
+            {"name": st.session_state['add_m1_name_input'], "type": st.session_state['add_m1_type_input']},
+            {"name": st.session_state['add_m2_name_input'], "type": st.session_state['add_m2_type_input']}
         ],
         "power": 100
     }
     
-    # 3. 存檔
     st.session_state['inventory'].append(new_card)
     save_db(st.session_state['inventory'])
     
-    # 4. 設定成功訊息 (讓主程式顯示)
-    st.session_state['save_success_msg'] = f"已新增並儲存：{name}"
+    st.session_state['msg_area'] = f"✅ 已新增：{name}"
     
-    # 5. 清空輸入框狀態 (在 Callback 裡做是安全的)
-    st.session_state['card_name_input'] = ""
-    st.session_state['tag_input'] = "無"
-    st.session_state['t1_input'] = "一般"
-    st.session_state['t2_input'] = "無"
-    st.session_state['m1_name_input'] = ""
-    st.session_state['m1_type_input'] = "一般"
-    st.session_state['m2_name_input'] = ""
-    st.session_state['m2_type_input'] = "一般"
+    # 清空新增欄位
+    st.session_state['add_name_input'] = ""
+    st.session_state['add_m1_name_input'] = ""
+    st.session_state['add_m2_name_input'] = ""
     
-    # 6. 清除檔案處理紀錄 & 重置上傳按鈕
+    # 重置圖片上傳
     if 'last_processed_file' in st.session_state:
         del st.session_state['last_processed_file']
     st.session_state['uploader_key'] += 1
 
-# --- 功能 1: 新增卡片 ---
-def page_add_card():
-    st.header("🗃️ 新增 Mezastar 卡片資料")
+# --- Callback: 更新現有卡片 ---
+def update_card_callback():
+    idx = st.session_state['edit_select_index']
     
-    col_preview, col_edit = st.columns([1, 2])
+    updated_card = {
+        "name": st.session_state['edit_name_input'],
+        "tag": st.session_state['edit_tag_input'],
+        "type": st.session_state['edit_t1_input'],
+        "type2": st.session_state['edit_t2_input'],
+        "moves": [
+            {"name": st.session_state['edit_m1_name_input'], "type": st.session_state['edit_m1_type_input']},
+            {"name": st.session_state['edit_m2_name_input'], "type": st.session_state['edit_m2_type_input']}
+        ],
+        "power": 100
+    }
     
-    with col_preview:
-        st.subheader("1. 圖片上傳")
+    st.session_state['inventory'][idx] = updated_card
+    save_db(st.session_state['inventory'])
+    st.session_state['msg_area'] = f"✅ 已更新：{updated_card['name']}"
+
+# --- Callback: 刪除卡片 ---
+def delete_card_callback():
+    idx = st.session_state['edit_select_index']
+    removed_name = st.session_state['inventory'][idx]['name']
+    
+    st.session_state['inventory'].pop(idx)
+    save_db(st.session_state['inventory'])
+    st.session_state['msg_area'] = f"🗑️ 已刪除：{removed_name}"
+    # 刪除後重置選擇索引，避免 index out of range
+    st.session_state['edit_select_index'] = 0
+
+# --- 功能 1: 卡片資料庫管理 (新增/編輯/刪除) ---
+def page_manage_cards():
+    st.header("🗃️ 卡片資料庫管理")
+    
+    # 顯示全域訊息區 (用於顯示新增/修改/刪除的結果)
+    if 'msg_area' in st.session_state and st.session_state['msg_area']:
+        st.success(st.session_state['msg_area'])
+        st.session_state['msg_area'] = "" # 顯示一次後清空
+
+    # 使用 Tabs 分頁
+    tab_add, tab_edit = st.tabs(["➕ 新增卡片", "✏️ 編輯與刪除"])
+
+    # === Tab 1: 新增卡片 ===
+    with tab_add:
+        col_preview, col_edit = st.columns([1, 2])
         
-        # 使用動態 Key，確保每次新增後上傳元件會重置
-        current_key = st.session_state['uploader_key']
-        
-        front_file = st.file_uploader(
-            "上傳【正面】(選取後立即讀取檔名)", 
-            type=["jpg", "png", "jpeg"], 
-            key=f"u_front_{current_key}"
-        )
-        
-        back_file = st.file_uploader(
-            "上傳【背面】", 
-            type=["jpg", "png", "jpeg"], 
-            key=f"u_back_{current_key}"
-        )
-        
-        # --- 自動讀取檔名邏輯 ---
-        if front_file:
-            st.image(Image.open(front_file), caption="正面預覽", use_container_width=True)
+        with col_preview:
+            st.subheader("圖片上傳")
+            current_key = st.session_state['uploader_key']
             
-            # 檢查是否為新圖片
-            if 'last_processed_file' not in st.session_state or st.session_state['last_processed_file'] != front_file.name:
+            front_file = st.file_uploader("上傳【正面】(自動帶入檔名)", type=["jpg", "png", "jpeg"], key=f"u_front_{current_key}")
+            back_file = st.file_uploader("上傳【背面】", type=["jpg", "png", "jpeg"], key=f"u_back_{current_key}")
+            
+            if front_file:
+                st.image(Image.open(front_file), caption="正面預覽", use_container_width=True)
+                # 自動讀取檔名邏輯
+                if 'last_processed_file' not in st.session_state or st.session_state['last_processed_file'] != front_file.name:
+                    filename = os.path.splitext(front_file.name)[0]
+                    for suffix in ["_前", "_front", "正面"]:
+                        if filename.endswith(suffix):
+                            filename = filename.replace(suffix, "")
+                            break
+                    st.session_state['add_name_input'] = filename
+                    st.session_state['last_processed_file'] = front_file.name
+                    st.rerun()
+
+            if back_file:
+                st.image(Image.open(back_file), caption="背面預覽", use_container_width=True)
+
+        with col_edit:
+            st.subheader("填寫資料")
+            with st.form("add_form"):
+                st.text_input("卡片名稱", key="add_name_input")
+                st.selectbox("特殊能力", SPECIAL_TAGS, key="add_tag_input")
                 
-                # 解析檔名
-                filename = os.path.splitext(front_file.name)[0]
-                for suffix in ["_前", "_front", "正面"]:
-                    if filename.endswith(suffix):
-                        filename = filename.replace(suffix, "")
-                        break
+                c1, c2 = st.columns(2)
+                c1.selectbox("屬性 1", POKEMON_TYPES, key="add_t1_input")
+                c2.selectbox("屬性 2", POKEMON_TYPES, index=len(POKEMON_TYPES)-1, key="add_t2_input")
                 
-                # 更新輸入框狀態 (這裡直接改是安全的，因為之後會 rerun)
-                st.session_state['card_name_input'] = filename
-                st.session_state['last_processed_file'] = front_file.name
-                st.rerun()
+                st.markdown("**招式資訊**")
+                mc1_a, mc1_b = st.columns([2, 1])
+                mc1_a.text_input("一般招式", placeholder="例如：影子球", key="add_m1_name_input")
+                mc1_b.selectbox("屬性", POKEMON_TYPES, key="add_m1_type_input")
+                
+                mc2_a, mc2_b = st.columns([2, 1])
+                mc2_a.text_input("強力招式", placeholder="例如：極巨幽魂", key="add_m2_name_input")
+                mc2_b.selectbox("屬性", POKEMON_TYPES, key="add_m2_type_input")
+                
+                st.form_submit_button("💾 新增至資料庫", type="primary", on_click=save_new_card_callback)
 
-        if back_file:
-            st.image(Image.open(back_file), caption="背面預覽", use_container_width=True)
-
-    with col_edit:
-        st.subheader("2. 資料編輯")
-        
-        # 如果有成功訊息，顯示出來然後清空
-        if st.session_state['save_success_msg']:
-            st.success(st.session_state['save_success_msg'])
-            st.session_state['save_success_msg'] = "" # 只顯示一次
-
-        with st.form("card_form"):
-            st.text_input("卡片名稱", key="card_name_input")
-            st.selectbox("特殊能力", SPECIAL_TAGS, key="tag_input")
+    # === Tab 2: 編輯與刪除 ===
+    with tab_edit:
+        if not st.session_state['inventory']:
+            st.info("資料庫目前是空的，請先到「新增卡片」分頁加入資料。")
+        else:
+            st.subheader("🔍 選擇要管理的卡片")
+            
+            # 建立選單選項 (顯示名稱)
+            card_options = [f"{i+1}. {c['name']} ({c['tag']})" for i, c in enumerate(st.session_state['inventory'])]
+            
+            # 選擇器：回傳 Index
+            selected_idx = st.selectbox(
+                "請選擇卡片", 
+                range(len(st.session_state['inventory'])), 
+                format_func=lambda x: card_options[x],
+                key="edit_select_index"
+            )
+            
+            # 取得該卡片目前資料
+            card_data = st.session_state['inventory'][selected_idx]
             
             st.markdown("---")
-            st.markdown("**寶可夢屬性**")
-            c1, c2 = st.columns(2)
-            c1.selectbox("屬性 1", POKEMON_TYPES, key="t1_input")
-            c2.selectbox("屬性 2", POKEMON_TYPES, index=len(POKEMON_TYPES)-1, key="t2_input")
+            col_form, col_action = st.columns([3, 1])
             
-            st.markdown("---")
-            st.markdown("**招式資訊**")
+            with col_form:
+                st.subheader(f"編輯：{card_data['name']}")
+                with st.form("edit_form"):
+                    # 預填資料
+                    st.text_input("卡片名稱", value=card_data['name'], key="edit_name_input")
+                    
+                    # 處理 index 預設值 (避免資料庫的值不在選單中報錯)
+                    try:
+                        tag_idx = SPECIAL_TAGS.index(card_data['tag'])
+                    except: tag_idx = 0
+                    st.selectbox("特殊能力", SPECIAL_TAGS, index=tag_idx, key="edit_tag_input")
+                    
+                    ec1, ec2 = st.columns(2)
+                    try: t1_idx = POKEMON_TYPES.index(card_data['type'])
+                    except: t1_idx = 0
+                    ec1.selectbox("屬性 1", POKEMON_TYPES, index=t1_idx, key="edit_t1_input")
+                    
+                    try: t2_idx = POKEMON_TYPES.index(card_data.get('type2', '無'))
+                    except: t2_idx = len(POKEMON_TYPES)-1
+                    ec2.selectbox("屬性 2", POKEMON_TYPES, index=t2_idx, key="edit_t2_input")
+                    
+                    st.markdown("**招式資訊**")
+                    em1_a, em1_b = st.columns([2, 1])
+                    em1_a.text_input("一般招式", value=card_data['moves'][0]['name'], key="edit_m1_name_input")
+                    try: m1t_idx = POKEMON_TYPES.index(card_data['moves'][0]['type'])
+                    except: m1t_idx = 0
+                    em1_b.selectbox("屬性", POKEMON_TYPES, index=m1t_idx, key="edit_m1_type_input")
+                    
+                    em2_a, em2_b = st.columns([2, 1])
+                    em2_a.text_input("強力招式", value=card_data['moves'][1]['name'], key="edit_m2_name_input")
+                    try: m2t_idx = POKEMON_TYPES.index(card_data['moves'][1]['type'])
+                    except: m2t_idx = 0
+                    em2_b.selectbox("屬性", POKEMON_TYPES, index=m2t_idx, key="edit_m2_type_input")
+                    
+                    st.form_submit_button("✅ 更新資料", type="primary", on_click=update_card_callback)
             
-            mc1_a, mc1_b = st.columns([2, 1])
-            mc1_a.text_input("一般招式名稱", placeholder="例如：影子球", key="m1_name_input")
-            mc1_b.selectbox("屬性", POKEMON_TYPES, key="m1_type_input")
-            
-            mc2_a, mc2_b = st.columns([2, 1])
-            mc2_a.text_input("特殊/強力招式名稱", placeholder="例如：極巨幽魂", key="m2_name_input")
-            mc2_b.selectbox("屬性", POKEMON_TYPES, key="m2_type_input")
-            
-            # 關鍵修改：使用 on_click 綁定存檔函式
-            st.form_submit_button("💾 加入資料庫 (自動存檔)", type="primary", on_click=save_card_callback)
+            with col_action:
+                st.subheader("危險區域")
+                st.warning("刪除後無法復原")
+                st.button("🗑️ 刪除此卡片", type="secondary", on_click=delete_card_callback)
 
+    # 顯示簡易清單 (放在底部供參考)
     if st.session_state['inventory']:
         st.markdown("---")
-        st.subheader(f"📋 目前卡匣 ({len(st.session_state['inventory'])} 張)")
-        
-        display_data = []
-        for item in st.session_state['inventory']:
-            moves_str = f"{item['moves'][0]['name']} / {item['moves'][1]['name']}"
-            types_str = f"{item['type']}" + (f"/{item['type2']}" if item['type2'] != "無" else "")
+        with st.expander("檢視完整資料庫清單"):
+            display_data = []
+            for item in st.session_state['inventory']:
+                moves_str = f"{item['moves'][0]['name']} / {item['moves'][1]['name']}"
+                types_str = f"{item['type']}" + (f"/{item['type2']}" if item['type2'] != "無" else "")
+                display_data.append({
+                    "名稱": item['name'],
+                    "屬性": types_str,
+                    "特殊能力": item['tag'],
+                    "招式": moves_str
+                })
+            st.dataframe(pd.DataFrame(display_data), use_container_width=True)
             
-            display_data.append({
-                "名稱": item['name'],
-                "屬性": types_str,
-                "特殊能力": item['tag'],
-                "招式": moves_str
-            })
-            
-        st.dataframe(pd.DataFrame(display_data), use_container_width=True)
-        
-        json_str = json.dumps(st.session_state['inventory'], ensure_ascii=False, indent=4)
-        st.download_button("⬇️ 手動下載備份 (.json)", json_str, DB_FILE)
+            json_str = json.dumps(st.session_state['inventory'], ensure_ascii=False, indent=4)
+            st.download_button("⬇️ 下載備份 (.json)", json_str, DB_FILE)
 
-# --- 功能 2: 對戰分析 ---
+
+# --- 功能 2: 對戰分析 (維持不變) ---
 TYPE_CHART = {
     "一般": {"岩石": 0.5, "幽靈": 0, "鋼": 0.5},
     "火": {"草": 2, "冰": 2, "蟲": 2, "鋼": 2, "水": 0.5, "火": 0.5, "岩石": 0.5, "龍": 0.5},
@@ -348,9 +399,9 @@ def page_battle():
                 """)
 
 # --- 主程式切換 ---
-page = st.sidebar.radio("模式", ["新增卡片", "對戰分析"])
+page = st.sidebar.radio("模式", ["卡片資料庫管理", "對戰分析"])
 
-if page == "新增卡片":
-    page_add_card()
+if page == "卡片資料庫管理":
+    page_manage_cards()
 else:
     page_battle()
