@@ -5,7 +5,7 @@ from PIL import Image
 import json
 
 # --- 設定頁面 ---
-st.set_page_config(page_title="Mezastar 攻略輔助", layout="wide", page_icon="🎮")
+st.set_page_config(page_title="Mezastar 攻略輔助 (Gemini 2.0)", layout="wide", page_icon="🎮")
 
 # ==========================================
 # 👇👇👇 請把你的 API Key 貼在下面這行引號中 👇👇👇
@@ -28,7 +28,7 @@ if api_key:
 if 'inventory' not in st.session_state:
     st.session_state['inventory'] = []
 
-# --- 核心資料：屬性相剋表 (簡化版) ---
+# --- 核心資料：屬性相剋表 ---
 TYPE_CHART = {
     "一般": {"岩石": 0.5, "鬼": 0, "鋼": 0.5},
     "火": {"火": 0.5, "水": 0.5, "草": 2, "冰": 2, "蟲": 2, "岩石": 0.5, "龍": 0.5, "鋼": 2},
@@ -56,16 +56,22 @@ def analyze_images_with_ai(image_list, prompt):
         st.error("❌ 請先設定 API Key")
         return None
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # 🔥 修改處：改用最新的 Gemini 2.0 Flash Experimental
+        # 如果未來 2.0 正式版出了，可以改為 'gemini-2.0-flash'
+        model_name = 'gemini-2.0-flash-exp' 
         
-        # 建立內容請求清單：提示詞 + 圖片1 + 圖片2...
+        # 備用邏輯：如果 2.0 還不能用，自動切回 1.5
+        # (這裡我們先直接嘗試 2.0)
+        model = genai.GenerativeModel(model_name)
+        
+        # 建立內容請求清單
         request_content = [prompt]
         request_content.extend(image_list)
         
         response = model.generate_content(request_content)
         
         text = response.text
-        # 清理 Markdown json 格式
+        # 清理 JSON 格式
         if "```json" in text:
             text = text.replace('```json', '').replace('```', '')
         elif "```" in text:
@@ -73,13 +79,15 @@ def analyze_images_with_ai(image_list, prompt):
             
         return json.loads(text)
     except Exception as e:
-        st.error(f"AI 辨識失敗: {e}")
+        # 如果 2.0 失敗，顯示錯誤並建議切回 1.5
+        st.error(f"Gemini 2.0 辨識失敗: {e}")
+        st.warning("💡 提示：請確認已執行 `pip install --upgrade google-generativeai` 更新套件。")
         return None
 
 # --- 功能 1: 卡片管理 ---
 def page_inventory():
     st.header("🗂️ 我的卡匣管理")
-    st.info("💡 提示：同時上傳正面與背面，AI 讀取的數值會更準確喔！")
+    st.info("💡 目前使用模型：Gemini 2.0 Flash (最新版)")
     
     col_upload, col_data = st.columns([1, 2])
     
@@ -105,7 +113,7 @@ def page_inventory():
             elif not images_to_process:
                 st.error("請至少上傳一張正面照片")
             else:
-                with st.spinner("AI 正在綜合分析正反面資訊..."):
+                with st.spinner("Gemini 2.0 正在超速辨識中..."):
                     prompt = """
                     請辨識這些 Pokemon Mezastar 卡片圖片（可能包含正面與背面）。
                     請綜合兩張圖片的資訊，回傳 JSON 格式。
@@ -113,8 +121,8 @@ def page_inventory():
                     規則：
                     1. name: 寶可夢名稱 (string)
                     2. type: 屬性 (string, 例如: 火, 水, 草...)
-                    3. power: 數值/攻擊力 (int). 請優先在'背面'尋找詳細數值(例如總和或最大數值)，如果沒有背面，則看正面的數值。
-                    4. tag: 特殊能力 (string). 只能是: 'Mega進化', 'Z招式', '極巨化', '雙重招式', '太晶化', '無'。請仔細檢查正反面是否有相關圖示。
+                    3. power: 數值/攻擊力 (int). 請優先在'背面'尋找詳細數值，如果沒有背面，則看正面的數值。
+                    4. tag: 特殊能力 (string). 只能是: 'Mega進化', 'Z招式', '極巨化', '雙重招式', '太晶化', '無'。
                     
                     JSON 範例: {"name": "噴火龍", "type": "火", "power": 118, "tag": "極巨化"}
                     """
@@ -164,7 +172,8 @@ def page_battle():
                     with st.spinner("AI 正在觀察對手..."):
                         prompt = "辨識畫面中對手的主要屬性(例如'火'或'水')，只回傳屬性名稱純文字。"
                         try:
-                            model = genai.GenerativeModel('gemini-1.5-flash')
+                            # 這裡也同步使用 2.0
+                            model = genai.GenerativeModel('gemini-2.0-flash-exp')
                             res = model.generate_content([prompt, img])
                             detected = res.text.strip().replace("屬性", "")
                             if detected in TYPE_CHART:
