@@ -26,6 +26,7 @@ def save_db(data):
     try:
         with open(DB_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
+        st.toast("✅ 資料庫已儲存至硬碟！", icon="💾") # 使用 Toast 提示比較不干擾
     except Exception as e:
         st.error(f"寫入資料庫失敗: {e}")
 
@@ -61,7 +62,6 @@ defaults = {
     "add_m2_type_input": "一般",
     "add_m2_cat_input": "攻擊",
     "msg_area": "",
-    # 編輯用的 Key
     "edit_select_index": 0,
     "edit_name_input": "",
     "edit_attack_input": 100,
@@ -75,7 +75,6 @@ defaults = {
     "edit_m2_name_input": "",
     "edit_m2_type_input": "一般",
     "edit_m2_cat_input": "攻擊",
-    # 新增：管理分頁的狀態 Key
     "manage_sub_mode": "➕ 新增卡片" 
 }
 for key, val in defaults.items():
@@ -94,9 +93,14 @@ SPECIAL_TAGS = [
 
 MOVE_CATEGORIES = ["攻擊", "特攻"]
 
+# --- Helper: 排序資料庫 ---
+def sort_inventory():
+    """依照名稱 (name) 對資料庫進行排序"""
+    if st.session_state['inventory']:
+        st.session_state['inventory'].sort(key=lambda x: x['name'])
+
 # --- 同步編輯欄位的 Helper Function ---
 def fill_edit_fields():
-    """將選中卡片的資料填入編輯框"""
     if not st.session_state['inventory']: return
     
     idx = st.session_state.get('edit_select_index', 0)
@@ -148,8 +152,12 @@ def save_new_card_callback():
     }
     
     st.session_state['inventory'].append(new_card)
-    save_db(st.session_state['inventory'])
-    st.session_state['msg_area'] = f"✅ 已新增：{name}"
+    
+    # 1. 自動排序
+    sort_inventory()
+    
+    # 2. 移除自動 save_db，僅更新記憶體
+    st.session_state['msg_area'] = f"✅ 已新增 (暫存)：{name}，請記得手動存檔"
     
     # 清空欄位
     st.session_state['add_name_input'] = ""
@@ -162,7 +170,6 @@ def save_new_card_callback():
         del st.session_state['last_processed_file']
     st.session_state['uploader_key'] += 1
     
-    # 強制切換回新增模式 (雖然本來就在這，但保持一致性)
     st.session_state['manage_sub_mode'] = "➕ 新增卡片"
     st.rerun()
 
@@ -189,12 +196,18 @@ def update_card_callback():
         ]
     }
     st.session_state['inventory'][idx] = updated_card
-    save_db(st.session_state['inventory'])
-    st.session_state['msg_area'] = f"✅ 已更新：{updated_card['name']}"
+    
+    # 1. 自動排序 (因為名稱可能改變，位置會變)
+    sort_inventory()
+    
+    # 2. 移除自動 save_db
+    st.session_state['msg_area'] = f"✅ 已更新 (暫存)：{updated_card['name']}"
+    
+    # 排序後，原本的 idx 可能已經對應到不同的卡片，或是原卡片跑到了新位置
+    # 簡單起見，我們重置選單 index 到 0，避免錯亂
+    st.session_state['edit_select_index'] = 0
     
     fill_edit_fields()
-    # 這裡不需要特別設定 manage_sub_mode，因為 st.radio 會自動讀取當前 session_state
-    # 它會保持在 "✏️ 編輯與刪除"
     st.rerun()
 
 def delete_card_callback():
@@ -202,8 +215,9 @@ def delete_card_callback():
     if idx < len(st.session_state['inventory']):
         removed_name = st.session_state['inventory'][idx]['name']
         st.session_state['inventory'].pop(idx)
-        save_db(st.session_state['inventory'])
-        st.session_state['msg_area'] = f"🗑️ 已刪除：{removed_name}"
+        
+        # 移除自動 save_db
+        st.session_state['msg_area'] = f"🗑️ 已刪除 (暫存)：{removed_name}"
         
         st.session_state['edit_select_index'] = 0
         fill_edit_fields()
@@ -213,16 +227,21 @@ def delete_card_callback():
 def page_manage_cards():
     st.header("🗃️ 卡片資料庫管理")
     
+    # 手動存檔按鈕 (側邊欄也放，這裡也放方便操作)
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 💾 資料庫存檔")
+    if st.sidebar.button("儲存所有變更至檔案", type="primary"):
+        save_db(st.session_state['inventory'])
+    
     if 'msg_area' in st.session_state and st.session_state['msg_area']:
         st.success(st.session_state['msg_area'])
-        st.session_state['msg_area'] = "" # 顯示一次後清除
+        st.session_state['msg_area'] = "" 
 
-    # 關鍵修改：使用 Radio Button 代替 Tabs，這樣刷新後可以保持在當前選項
     sub_mode = st.radio(
         "功能切換", 
         ["➕ 新增卡片", "✏️ 編輯與刪除"], 
         horizontal=True,
-        key="manage_sub_mode" # 綁定 Session State
+        key="manage_sub_mode"
     )
 
     st.markdown("---")
@@ -284,10 +303,11 @@ def page_manage_cards():
             st.info("資料庫目前是空的。")
         else:
             st.subheader("🔍 選擇要管理的卡片")
+            # 選單顯示時也包含索引，方便查找
             card_options = [f"{i+1}. {c['name']} ({c['tag']})" for i, c in enumerate(st.session_state['inventory'])]
             
             selected_idx = st.selectbox(
-                "請選擇卡片", 
+                "請選擇卡片 (已依名稱排序)", 
                 range(len(st.session_state['inventory'])), 
                 format_func=lambda x: card_options[x], 
                 key="edit_select_index",
@@ -325,7 +345,7 @@ def page_manage_cards():
                     em2_b.selectbox("屬性", POKEMON_TYPES, key="edit_m2_type_input")
                     em2_c.selectbox("分類", MOVE_CATEGORIES, key="edit_m2_cat_input")
                     
-                    st.form_submit_button("✅ 更新資料", type="primary", on_click=update_card_callback)
+                    st.form_submit_button("✅ 更新資料 (暫存)", type="primary", on_click=update_card_callback)
             
             with col_action:
                 st.subheader("危險區域")
@@ -348,8 +368,9 @@ def page_manage_cards():
                     "招式": moves_str
                 })
             st.dataframe(pd.DataFrame(display_data), use_container_width=True)
+            # 下載按鈕 (其實跟存檔到硬碟功能重複，但下載可以存到別的地方)
             json_str = json.dumps(st.session_state['inventory'], ensure_ascii=False, indent=4)
-            st.download_button("⬇️ 下載備份 (.json)", json_str, DB_FILE)
+            st.download_button("⬇️ 下載 JSON 備份檔", json_str, DB_FILE)
 
 # --- 功能 2: 對戰分析 ---
 TYPE_CHART = {
