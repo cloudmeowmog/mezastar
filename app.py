@@ -55,7 +55,8 @@ defaults = {
     "m1_name_input": "",
     "m1_type_input": "一般",
     "m2_name_input": "",
-    "m2_type_input": "一般"
+    "m2_type_input": "一般",
+    "save_success_msg": "" # 用來顯示存檔成功的訊息
 }
 for key, val in defaults.items():
     if key not in st.session_state:
@@ -70,6 +71,48 @@ POKEMON_TYPES = [
 SPECIAL_TAGS = [
     "無", "Mega進化", "Z招式", "極巨化", "太晶化", "特別聯手對戰", "雙重招式"
 ]
+
+# --- 關鍵修正：存檔的回呼函式 (Callback) ---
+# 這個函式會在按鈕按下的瞬間執行，早於畫面重新渲染，所以可以安全地清空欄位
+def save_card_callback():
+    # 1. 取得目前輸入框的值
+    name = st.session_state['card_name_input']
+    if not name: name = "未命名"
+    
+    # 2. 建立新卡片資料
+    new_card = {
+        "name": name,
+        "tag": st.session_state['tag_input'],
+        "type": st.session_state['t1_input'],
+        "type2": st.session_state['t2_input'],
+        "moves": [
+            {"name": st.session_state['m1_name_input'], "type": st.session_state['m1_type_input']},
+            {"name": st.session_state['m2_name_input'], "type": st.session_state['m2_type_input']}
+        ],
+        "power": 100
+    }
+    
+    # 3. 存檔
+    st.session_state['inventory'].append(new_card)
+    save_db(st.session_state['inventory'])
+    
+    # 4. 設定成功訊息 (讓主程式顯示)
+    st.session_state['save_success_msg'] = f"已新增並儲存：{name}"
+    
+    # 5. 清空輸入框狀態 (在 Callback 裡做是安全的)
+    st.session_state['card_name_input'] = ""
+    st.session_state['tag_input'] = "無"
+    st.session_state['t1_input'] = "一般"
+    st.session_state['t2_input'] = "無"
+    st.session_state['m1_name_input'] = ""
+    st.session_state['m1_type_input'] = "一般"
+    st.session_state['m2_name_input'] = ""
+    st.session_state['m2_type_input'] = "一般"
+    
+    # 6. 清除檔案處理紀錄 & 重置上傳按鈕
+    if 'last_processed_file' in st.session_state:
+        del st.session_state['last_processed_file']
+    st.session_state['uploader_key'] += 1
 
 # --- 功能 1: 新增卡片 ---
 def page_add_card():
@@ -109,13 +152,9 @@ def page_add_card():
                         filename = filename.replace(suffix, "")
                         break
                 
-                # 更新輸入框狀態
+                # 更新輸入框狀態 (這裡直接改是安全的，因為之後會 rerun)
                 st.session_state['card_name_input'] = filename
-                
-                # 標記已處理
                 st.session_state['last_processed_file'] = front_file.name
-                
-                # 強制刷新
                 st.rerun()
 
         if back_file:
@@ -124,7 +163,11 @@ def page_add_card():
     with col_edit:
         st.subheader("2. 資料編輯")
         
-        # 移除了 clear_on_submit=True，改用手動清空
+        # 如果有成功訊息，顯示出來然後清空
+        if st.session_state['save_success_msg']:
+            st.success(st.session_state['save_success_msg'])
+            st.session_state['save_success_msg'] = "" # 只顯示一次
+
         with st.form("card_form"):
             st.text_input("卡片名稱", key="card_name_input")
             st.selectbox("特殊能力", SPECIAL_TAGS, key="tag_input")
@@ -146,48 +189,8 @@ def page_add_card():
             mc2_a.text_input("特殊/強力招式名稱", placeholder="例如：極巨幽魂", key="m2_name_input")
             mc2_b.selectbox("屬性", POKEMON_TYPES, key="m2_type_input")
             
-            submitted = st.form_submit_button("💾 加入資料庫 (自動存檔)", type="primary")
-            
-            if submitted:
-                # 取得目前輸入框的值
-                name = st.session_state['card_name_input']
-                if not name: name = "未命名"
-                
-                new_card = {
-                    "name": name,
-                    "tag": st.session_state['tag_input'],
-                    "type": st.session_state['t1_input'],
-                    "type2": st.session_state['t2_input'],
-                    "moves": [
-                        {"name": st.session_state['m1_name_input'], "type": st.session_state['m1_type_input']},
-                        {"name": st.session_state['m2_name_input'], "type": st.session_state['m2_type_input']}
-                    ],
-                    "power": 100
-                }
-                
-                # 存檔
-                st.session_state['inventory'].append(new_card)
-                save_db(st.session_state['inventory'])
-                st.success(f"已新增並儲存：{name}")
-                
-                # --- 強制清空暫存狀態 (解決名稱卡住的問題) ---
-                st.session_state['card_name_input'] = ""
-                st.session_state['tag_input'] = "無"
-                st.session_state['t1_input'] = "一般"
-                st.session_state['t2_input'] = "無"
-                st.session_state['m1_name_input'] = ""
-                st.session_state['m1_type_input'] = "一般"
-                st.session_state['m2_name_input'] = ""
-                st.session_state['m2_type_input'] = "一般"
-                
-                # 清除檔案處理紀錄
-                if 'last_processed_file' in st.session_state:
-                    del st.session_state['last_processed_file']
-                
-                # 重置上傳按鈕
-                st.session_state['uploader_key'] += 1
-                
-                st.rerun()
+            # 關鍵修改：使用 on_click 綁定存檔函式
+            st.form_submit_button("💾 加入資料庫 (自動存檔)", type="primary", on_click=save_card_callback)
 
     if st.session_state['inventory']:
         st.markdown("---")
