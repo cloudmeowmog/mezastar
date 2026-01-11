@@ -13,7 +13,6 @@ DB_FILE = "mezastar_db.json"
 
 # --- 函式：讀取與寫入資料庫 ---
 def load_db():
-    """程式啟動時，從同目錄下的 json 檔案讀取資料"""
     if os.path.exists(DB_FILE):
         try:
             with open(DB_FILE, "r", encoding="utf-8") as f:
@@ -24,7 +23,6 @@ def load_db():
     return []
 
 def save_db(data):
-    """將資料寫入同目錄下的 json 檔案"""
     try:
         with open(DB_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
@@ -40,7 +38,7 @@ else:
 if api_key:
     genai.configure(api_key=api_key)
 
-# --- 資料庫初始化 (關鍵修改：啟動時嘗試讀取檔案) ---
+# --- 資料庫初始化 ---
 if 'inventory' not in st.session_state:
     st.session_state['inventory'] = load_db()
 
@@ -140,10 +138,7 @@ def page_add_card():
                 }
                 
                 st.session_state['inventory'].append(new_card)
-                
-                # --- 關鍵修改：立即寫入硬碟 ---
                 save_db(st.session_state['inventory'])
-                
                 st.success(f"已新增並儲存：{name}")
                 
                 if 'last_processed_file' in st.session_state:
@@ -152,10 +147,9 @@ def page_add_card():
                 st.session_state['uploader_key'] += 1
                 st.rerun()
 
-    # 清單列表
     if st.session_state['inventory']:
         st.markdown("---")
-        st.subheader(f"📋 目前卡匣 ({len(st.session_state['inventory'])} 張) - 已自動載入")
+        st.subheader(f"📋 目前卡匣 ({len(st.session_state['inventory'])} 張)")
         
         display_data = []
         for item in st.session_state['inventory']:
@@ -171,114 +165,174 @@ def page_add_card():
             
         st.dataframe(pd.DataFrame(display_data), use_container_width=True)
         
-        # 仍然保留手動下載功能，以防萬一
         json_str = json.dumps(st.session_state['inventory'], ensure_ascii=False, indent=4)
         st.download_button("⬇️ 手動下載備份 (.json)", json_str, DB_FILE)
 
-# --- 功能 2: 對戰分析 ---
+# --- 功能 2: 對戰分析 (全新升級版) ---
 TYPE_CHART = {
     "一般": {"岩石": 0.5, "幽靈": 0, "鋼": 0.5},
-    "火": {"草": 2, "冰": 2, "蟲": 2, "鋼": 2, "水": 0.5, "火": 0.5},
-    "水": {"火": 2, "地面": 2, "岩石": 2, "水": 0.5, "草": 0.5},
-    "電": {"水": 2, "飛行": 2, "地面": 0, "電": 0.5},
-    "草": {"水": 2, "地面": 2, "岩石": 2, "火": 0.5, "草": 0.5},
-    "冰": {"草": 2, "地面": 2, "飛行": 2, "龍": 2, "火": 0.5, "冰": 0.5},
-    "格鬥": {"一般": 2, "冰": 2, "岩石": 2, "惡": 2, "鋼": 2, "幽靈": 0},
-    "毒": {"草": 2, "妖精": 2, "毒": 0.5, "地面": 0.5, "幽靈": 0.5},
-    "地面": {"火": 2, "電": 2, "毒": 2, "岩石": 2, "鋼": 2, "飛行": 0},
-    "飛行": {"草": 2, "格鬥": 2, "蟲": 2, "電": 0.5, "岩石": 0.5},
-    "超能力": {"格鬥": 2, "毒": 2, "超能力": 0.5, "惡": 0},
-    "蟲": {"草": 2, "超能力": 2, "惡": 2, "火": 0.5, "飛行": 0.5, "幽靈": 0.5},
-    "岩石": {"火": 2, "冰": 2, "飛行": 2, "蟲": 2, "格鬥": 0.5, "地面": 0.5},
+    "火": {"草": 2, "冰": 2, "蟲": 2, "鋼": 2, "水": 0.5, "火": 0.5, "岩石": 0.5, "龍": 0.5},
+    "水": {"火": 2, "地面": 2, "岩石": 2, "水": 0.5, "草": 0.5, "龍": 0.5},
+    "電": {"水": 2, "飛行": 2, "地面": 0, "電": 0.5, "草": 0.5, "龍": 0.5},
+    "草": {"水": 2, "地面": 2, "岩石": 2, "火": 0.5, "草": 0.5, "毒": 0.5, "飛行": 0.5, "蟲": 0.5, "龍": 0.5, "鋼": 0.5},
+    "冰": {"草": 2, "地面": 2, "飛行": 2, "龍": 2, "火": 0.5, "冰": 0.5, "鋼": 0.5, "水": 0.5},
+    "格鬥": {"一般": 2, "冰": 2, "岩石": 2, "惡": 2, "鋼": 2, "幽靈": 0, "毒": 0.5, "飛行": 0.5, "超能力": 0.5, "蟲": 0.5, "妖精": 0.5},
+    "毒": {"草": 2, "妖精": 2, "毒": 0.5, "地面": 0.5, "幽靈": 0.5, "岩石": 0.5, "鋼": 0},
+    "地面": {"火": 2, "電": 2, "毒": 2, "岩石": 2, "鋼": 2, "飛行": 0, "草": 0.5, "蟲": 0.5},
+    "飛行": {"草": 2, "格鬥": 2, "蟲": 2, "電": 0.5, "岩石": 0.5, "鋼": 0.5},
+    "超能力": {"格鬥": 2, "毒": 2, "超能力": 0.5, "惡": 0, "鋼": 0.5},
+    "蟲": {"草": 2, "超能力": 2, "惡": 2, "火": 0.5, "飛行": 0.5, "幽靈": 0.5, "格鬥": 0.5, "毒": 0.5, "鋼": 0.5, "妖精": 0.5},
+    "岩石": {"火": 2, "冰": 2, "飛行": 2, "蟲": 2, "格鬥": 0.5, "地面": 0.5, "鋼": 0.5},
     "幽靈": {"超能力": 2, "幽靈": 2, "一般": 0, "惡": 0.5},
     "龍": {"龍": 2, "鋼": 0.5, "妖精": 0},
-    "惡": {"幽靈": 2, "超能力": 2, "格鬥": 0.5, "妖精": 0.5},
-    "鋼": {"冰": 2, "岩石": 2, "妖精": 2, "火": 0.5, "水": 0.5},
-    "妖精": {"格鬥": 2, "龍": 2, "惡": 2, "毒": 0.5, "鋼": 0.5}
+    "惡": {"幽靈": 2, "超能力": 2, "格鬥": 0.5, "妖精": 0.5, "惡": 0.5},
+    "鋼": {"冰": 2, "岩石": 2, "妖精": 2, "火": 0.5, "水": 0.5, "電": 0.5, "鋼": 0.5},
+    "妖精": {"格鬥": 2, "龍": 2, "惡": 2, "毒": 0.5, "鋼": 0.5, "火": 0.5}
 }
 
 def get_effectiveness(attacker_type, defender_type):
+    """計算單一屬性攻擊對單一屬性防禦的倍率"""
+    if defender_type == "無" or attacker_type == "無": return 1.0
     if attacker_type not in TYPE_CHART: return 1.0
     return TYPE_CHART[attacker_type].get(defender_type, 1.0)
 
-def page_battle():
-    st.header("⚔️ 對戰分析")
-    st.info("這裡使用 AI 辨識對手畫面，若 API 故障請手動選擇屬性。")
-    
-    col_op, col_rec = st.columns(2)
-    opponent_type = "一般"
-    
-    with col_op:
-        st.subheader("1. 對手資訊")
-        tab_cam, tab_man = st.tabs(["📸 拍照辨識", "✍️ 手動選擇"])
-        
-        with tab_man:
-            opponent_type = st.selectbox("選擇對手屬性", POKEMON_TYPES[:-1])
-            
-        with tab_cam:
-            battle_file = st.file_uploader("上傳對戰畫面", type=["jpg", "png"])
-            if battle_file:
-                img = Image.open(battle_file)
-                st.image(img, width=200)
-                if st.button("辨識對手屬性"):
-                    if not api_key:
-                        st.error("請先設定 API Key 才能使用辨識功能")
-                    else:
-                        with st.spinner("AI 正在觀察..."):
-                            try:
-                                model = genai.GenerativeModel('gemini-1.5-flash')
-                                prompt = "辨識畫面中對手的主要屬性(例如'火'或'水')，只回傳屬性名稱純文字。如果是'鬼'屬性請回傳'幽靈'。"
-                                res = model.generate_content([prompt, img])
-                                detected = res.text.strip().replace("屬性", "")
-                                if detected == "鬼": detected = "幽靈"
-                                
-                                if detected in TYPE_CHART:
-                                    st.session_state['detected_opp'] = detected
-                                    st.success(f"偵測到：{detected}")
-                                    st.rerun()
-                                else:
-                                    st.warning(f"偵測不明：{detected}")
-                            except Exception as e:
-                                st.error(f"辨識失敗: {e}")
-            
-            if 'detected_opp' in st.session_state:
-                opponent_type = st.session_state['detected_opp']
-                st.write(f"目前鎖定對手：**{opponent_type}**")
+def calculate_dual_effectiveness(attacker_type, def_t1, def_t2):
+    """計算對雙屬性防禦的總倍率"""
+    eff1 = get_effectiveness(attacker_type, def_t1)
+    eff2 = get_effectiveness(attacker_type, def_t2)
+    return eff1 * eff2
 
-    with col_rec:
-        st.subheader("2. 推薦隊伍")
-        if st.button("計算最佳組合"):
-            if not st.session_state['inventory']:
-                st.error("卡匣是空的！請先去【新增卡片】建立資料。")
-            else:
-                recs = []
-                for card in st.session_state['inventory']:
-                    best_score = 0
-                    best_move = ""
-                    
-                    for idx, m in enumerate(card['moves']):
-                        if not m['name']: continue
-                        eff = get_effectiveness(m['type'], opponent_type)
-                        base = 120 if idx == 1 else 100
-                        score = base * eff
-                        
-                        if score > best_score:
-                            best_score = score
-                            best_move = f"{m['name']}({m['type']})"
-                    
-                    if card['tag'] != '無': best_score *= 1.2
-                    
-                    recs.append({
-                        "name": card['name'],
-                        "tag": card['tag'],
-                        "move": best_move,
-                        "score": best_score
-                    })
+def page_battle():
+    st.header("⚔️ 對戰分析 (3 vs 3)")
+    st.info("請輸入三位對手的屬性與招式，AI 將計算攻防一體最佳陣容。")
+    
+    # 建立三個對手的輸入區塊
+    opponents = []
+    cols = st.columns(3)
+    
+    for i in range(3):
+        with cols[i]:
+            st.markdown(f"### 🥊 對手 {i+1}")
+            t1 = st.selectbox(f"屬性 1", POKEMON_TYPES, index=0, key=f"op{i}_t1")
+            t2 = st.selectbox(f"屬性 2", POKEMON_TYPES, index=len(POKEMON_TYPES)-1, key=f"op{i}_t2") # 預設無
+            move_type = st.selectbox(f"招式屬性 (攻擊我方)", POKEMON_TYPES, index=0, key=f"op{i}_move")
+            opponents.append({"t1": t1, "t2": t2, "move": move_type})
+
+    st.markdown("---")
+    
+    if st.button("🚀 計算最佳攻防隊伍", type="primary"):
+        if not st.session_state['inventory']:
+            st.error("卡匣是空的！請先建立資料。")
+            return
+
+        recs = []
+        
+        # 針對每一張我的卡片進行評分
+        for card in st.session_state['inventory']:
+            total_offense_score = 0
+            total_defense_penalty = 0
+            best_move_display = ""
+            
+            # 1. 攻擊分數 (我打對手)
+            # 我們假設這張卡片會對上這三隻對手，取平均效益或最大效益
+            # 這裡採取「累積效益」，因為一場戰鬥可能會打多隻
+            
+            my_best_move_idx = 0
+            my_best_move_power = 0
+            
+            # 先找出這張卡哪一招最強 (針對這三個對手的平均表現)
+            for idx, move in enumerate(card['moves']):
+                if not move['name']: continue
                 
-                recs.sort(key=lambda x: x['score'], reverse=True)
+                move_score_sum = 0
+                for opp in opponents:
+                    eff = calculate_dual_effectiveness(move['type'], opp['t1'], opp['t2'])
+                    move_score_sum += eff
                 
-                for i, p in enumerate(recs[:3]):
-                    st.success(f"第 {i+1} 名: **{p['name']}** ({p['tag']}) | 建議: {p['move']}")
+                # 簡單加權：第二招通常比較痛
+                base_power = 120 if idx == 1 else 100
+                current_power = base_power * move_score_sum
+                
+                if current_power > my_best_move_power:
+                    my_best_move_power = current_power
+                    my_best_move_idx = idx
+                    best_move_display = f"{move['name']}({move['type']})"
+
+            # 最終攻擊分數
+            total_offense_score = my_best_move_power
+            
+            # 2. 防禦分數 (對手打我)
+            # 計算三個對手的招式打我有沒有特別痛
+            # 數值越小代表防禦越好 (受傷倍率)
+            defense_multipliers = []
+            for opp in opponents:
+                # 我方防禦屬性
+                my_t1 = card['type']
+                my_t2 = card.get('type2', '無')
+                dmg_taken = calculate_dual_effectiveness(opp['move'], my_t1, my_t2)
+                defense_multipliers.append(dmg_taken)
+            
+            # 取最大受傷倍率來當作風險 (避免被秒殺)
+            max_risk = max(defense_multipliers)
+            
+            # 3. 綜合評分公式
+            # 分數 = 攻擊力 / 風險係數
+            # 如果風險是 4倍(極大)，分數會除以4；如果是 0.25(減傷)，分數會乘以4
+            # 為了避免除以0 (免疫)，將0視為極小的數 0.1
+            risk_factor = max_risk if max_risk > 0 else 0.1
+            
+            final_score = total_offense_score / risk_factor
+            
+            # 特殊能力加權
+            if card['tag'] != '無': final_score *= 1.2
+            
+            recs.append({
+                "name": card['name'],
+                "tag": card['tag'],
+                "move": best_move_display,
+                "score": final_score,
+                "risk": max_risk
+            })
+
+        # 排序
+        recs.sort(key=lambda x: x['score'], reverse=True)
+
+        # 挑選不重複 Tag 的前三名
+        final_team = []
+        used_tags = set()
+        
+        for r in recs:
+            if len(final_team) >= 3: break
+            if r['tag'] != '無' and r['tag'] in used_tags: continue
+            final_team.append(r)
+            if r['tag'] != '無': used_tags.add(r['tag'])
+            
+        # 補滿
+        if len(final_team) < 3:
+            for r in recs:
+                if len(final_team) >= 3: break
+                if r not in final_team: final_team.append(r)
+
+        # 顯示結果
+        st.subheader("🏆 推薦出戰陣容")
+        
+        cols = st.columns(3)
+        for i, p in enumerate(final_team):
+            with cols[i]:
+                risk_text = "普通"
+                if p['risk'] >= 2: risk_text = "⚠️ 危險"
+                elif p['risk'] <= 0.5: risk_text = "🛡️ 堅硬"
+                elif p['risk'] == 0: risk_text = "✨ 免疫"
+                
+                st.success(f"""
+                **第 {i+1} 棒**
+                
+                ### {p['name']}
+                
+                * **能力**: {p['tag']}
+                * **建議招式**: {p['move']}
+                * **防禦評估**: {risk_text} (最大受傷 x{p['risk']})
+                """)
 
 # --- 主程式切換 ---
 page = st.sidebar.radio("模式", ["新增卡片", "對戰分析"])
