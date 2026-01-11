@@ -1,42 +1,5 @@
 [
     {
-        "name": "1-3-006_捷拉奧拉",
-        "attack": 134,
-        "sp_attack": 123,
-        "tag": "Z招式",
-        "type": "電",
-        "type2": "無",
-        "moves": [
-            {
-                "name": "等離子閃電拳",
-                "type": "電",
-                "category": "攻擊"
-            },
-            {
-                "name": "終極伏特狂雷閃",
-                "type": "電",
-                "category": "攻擊"
-            }
-        ]
-    },
-    {
-        "name": "1-4-005_白馬蕾冠王",
-        "tag": "極巨化",
-        "type": "超能力",
-        "type2": "冰",
-        "moves": [
-            {
-                "name": "雪矛",
-                "type": "冰"
-            },
-            {
-                "name": "極巨寒冰",
-                "type": "冰"
-            }
-        ],
-        "power": 100
-    },
-    {
         "name": "1-3-005_甲賀忍蛙",
         "attack": 115,
         "sp_attack": 124,
@@ -53,6 +16,26 @@
                 "name": "黑洞吞噬萬物滅",
                 "type": "惡",
                 "category": "特攻"
+            }
+        ]
+    },
+    {
+        "name": "1-3-006_捷拉奧拉",
+        "attack": 134,
+        "sp_attack": 123,
+        "tag": "Z招式",
+        "type": "電",
+        "type2": "無",
+        "moves": [
+            {
+                "name": "等離子閃電拳",
+                "type": "電",
+                "category": "攻擊"
+            },
+            {
+                "name": "終極伏特狂雷閃",
+                "type": "電",
+                "category": "攻擊"
             }
         ]
     },
@@ -92,5 +75,45 @@
             }
         ],
         "power": 100
+    },
+    {
+        "name": "1-4-005_白馬蕾冠王",
+        "attack": 203,
+        "sp_attack": 107,
+        "tag": "極巨化",
+        "type": "超能力",
+        "type2": "冰",
+        "moves": [
+            {
+                "name": "雪矛",
+                "type": "冰",
+                "category": "攻擊"
+            },
+            {
+                "name": "極巨寒冰",
+                "type": "冰",
+                "category": "攻擊"
+            }
+        ]
+    },
+    {
+        "name": "1-4-006_黑馬蕾冠王",
+        "attack": 107,
+        "sp_attack": 203,
+        "tag": "極巨化",
+        "type": "超能力",
+        "type2": "幽靈",
+        "moves": [
+            {
+                "name": "星碎",
+                "type": "幽靈",
+                "category": "特攻"
+            },
+            {
+                "name": "極巨幽魂",
+                "type": "幽靈",
+                "category": "特攻"
+            }
+        ]
     }
 ]
