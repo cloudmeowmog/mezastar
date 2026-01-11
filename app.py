@@ -77,6 +77,7 @@ def save_new_card_callback():
     save_db(st.session_state['inventory'])
     st.session_state['msg_area'] = f"✅ 已新增：{name}"
     
+    # 清空欄位
     st.session_state['add_name_input'] = ""
     st.session_state['add_m1_name_input'] = ""
     st.session_state['add_m2_name_input'] = ""
@@ -289,7 +290,6 @@ def page_battle():
             safe_risk = max_risk if max_risk > 0 else 0.1
             
             # --- 方案 A: 全力模式 (Special) ---
-            # 找最強的招式 (通常是第二招 AOE)
             max_aoe_special = 0
             best_move_special = ""
             
@@ -299,38 +299,35 @@ def page_battle():
                 for opp in opponents:
                     eff_sum += calculate_dual_effectiveness(move['type'], opp['t1'], opp['t2'])
                 
-                # 特殊招式加權 (假設第二招是特殊)
                 base = 120 if idx == 1 else 100
                 total = base * eff_sum
                 if total > max_aoe_special:
                     max_aoe_special = total
                     best_move_special = f"{move['name']}({move['type']})"
             
-            # 若有 Tag，分數加成 1.2
             score_special = max_aoe_special / safe_risk
             tag_name = card['tag']
             if tag_name != '無':
                 score_special *= 1.2
-                
+            
+            # 修正處：直接賦值，不使用海象運算子
+            best_move_display_special = best_move_special
+            
             candidates.append({
                 "name": card['name'],
-                "use_tag": tag_name, # 這裡記錄要佔用的 Tag
+                "use_tag": tag_name, 
                 "score": score_special,
-                "move": best_move_display_special := best_move_special,
+                "move": best_move_display_special,
                 "aoe_dmg": max_aoe_special * (1.2 if tag_name != '無' else 1.0),
                 "risk": max_risk,
                 "mode": "special"
             })
             
             # --- 方案 B: 保留模式 (Normal) ---
-            # 如果這張卡本來就沒 Tag，方案 B 跟 A 是一樣的，可以跳過
-            # 只有當卡片有 Tag 時，我們才需要產生一個「不使用 Tag」的備案
             if tag_name != '無':
                 max_aoe_normal = 0
                 best_move_normal = ""
                 
-                # 假設如果不使用特殊能力，可能威力會受限，或者只能用第一招？
-                # 這裡假設：不使用 Tag 依然可以用招式，只是沒有 1.2 倍加成
                 for idx, move in enumerate(card['moves']):
                     if not move['name']: continue
                     eff_sum = 0
@@ -347,15 +344,15 @@ def page_battle():
                 
                 candidates.append({
                     "name": card['name'],
-                    "use_tag": "無", # 強制標記為無，代表不佔用
-                    "score": score_normal, # 沒加成
+                    "use_tag": "無", 
+                    "score": score_normal, 
                     "move": best_move_normal,
                     "aoe_dmg": max_aoe_normal,
                     "risk": max_risk,
                     "mode": "normal"
                 })
 
-        # 2. 排序：所有方案混在一起比分數
+        # 2. 排序
         candidates.sort(key=lambda x: x['score'], reverse=True)
 
         # 3. 挑選隊伍 (Greedy)
@@ -366,17 +363,13 @@ def page_battle():
         for cand in candidates:
             if len(final_team) >= 3: break
             
-            # 規則 1: 同一隻寶可夢不能上場兩次
             if cand['name'] in used_names:
                 continue
             
-            # 規則 2: Tag 衝突檢查
-            # 如果這個方案要用 Tag (不是'無')，且該 Tag 已經被用過了 -> 跳過 (會自動輪到它的 Normal 方案)
             tag = cand['use_tag']
             if tag != '無' and tag in used_tags:
                 continue
             
-            # 錄取
             final_team.append(cand)
             used_names.add(cand['name'])
             if tag != '無':
@@ -395,10 +388,8 @@ def page_battle():
                 elif p['risk'] <= 0.5: risk_text = "🛡️ 堅硬"
                 elif p['risk'] == 0: risk_text = "✨ 免疫"
                 
-                # 顯示 Tag 狀態
                 tag_display = p['use_tag']
                 if p['mode'] == 'normal' and tag_display == '無':
-                     # 如果原本有 Tag 但被降級，提示一下
                      tag_display = "一般招式 (保留特殊能力)"
                 
                 st.success(f"""
