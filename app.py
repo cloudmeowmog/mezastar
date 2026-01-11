@@ -11,12 +11,21 @@ st.set_page_config(page_title="Mezastar 檔案室", layout="wide", page_icon="�
 # --- 設定資料庫檔案名稱 ---
 DB_FILE = "mezastar_db.json"
 
+# --- Helper: 排序資料庫 (關鍵功能) ---
+def sort_inventory(data):
+    """依照名稱 (name) 對資料庫進行 A-Z 排序"""
+    if data:
+        data.sort(key=lambda x: x['name'])
+    return data
+
 # --- 函式：讀取與寫入資料庫 ---
 def load_db():
     if os.path.exists(DB_FILE):
         try:
             with open(DB_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+                # 載入時立即排序，確保順序正確
+                return sort_inventory(data)
         except Exception as e:
             st.error(f"讀取資料庫失敗: {e}")
             return []
@@ -24,9 +33,11 @@ def load_db():
 
 def save_db(data):
     try:
+        # 存檔前也確保是排序過的 (雖然通常操作時已經排過，但多一層保險)
+        sort_inventory(data)
         with open(DB_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
-        st.toast("✅ 資料庫已儲存至硬碟！", icon="💾") # 使用 Toast 提示比較不干擾
+        st.toast("✅ 資料庫已儲存至硬碟！", icon="💾")
     except Exception as e:
         st.error(f"寫入資料庫失敗: {e}")
 
@@ -93,12 +104,6 @@ SPECIAL_TAGS = [
 
 MOVE_CATEGORIES = ["攻擊", "特攻"]
 
-# --- Helper: 排序資料庫 ---
-def sort_inventory():
-    """依照名稱 (name) 對資料庫進行排序"""
-    if st.session_state['inventory']:
-        st.session_state['inventory'].sort(key=lambda x: x['name'])
-
 # --- 同步編輯欄位的 Helper Function ---
 def fill_edit_fields():
     if not st.session_state['inventory']: return
@@ -153,10 +158,9 @@ def save_new_card_callback():
     
     st.session_state['inventory'].append(new_card)
     
-    # 1. 自動排序
-    sort_inventory()
+    # 自動排序
+    sort_inventory(st.session_state['inventory'])
     
-    # 2. 移除自動 save_db，僅更新記憶體
     st.session_state['msg_area'] = f"✅ 已新增 (暫存)：{name}，請記得手動存檔"
     
     # 清空欄位
@@ -197,16 +201,12 @@ def update_card_callback():
     }
     st.session_state['inventory'][idx] = updated_card
     
-    # 1. 自動排序 (因為名稱可能改變，位置會變)
-    sort_inventory()
+    # 自動排序
+    sort_inventory(st.session_state['inventory'])
     
-    # 2. 移除自動 save_db
     st.session_state['msg_area'] = f"✅ 已更新 (暫存)：{updated_card['name']}"
     
-    # 排序後，原本的 idx 可能已經對應到不同的卡片，或是原卡片跑到了新位置
-    # 簡單起見，我們重置選單 index 到 0，避免錯亂
     st.session_state['edit_select_index'] = 0
-    
     fill_edit_fields()
     st.rerun()
 
@@ -216,7 +216,6 @@ def delete_card_callback():
         removed_name = st.session_state['inventory'][idx]['name']
         st.session_state['inventory'].pop(idx)
         
-        # 移除自動 save_db
         st.session_state['msg_area'] = f"🗑️ 已刪除 (暫存)：{removed_name}"
         
         st.session_state['edit_select_index'] = 0
@@ -227,7 +226,6 @@ def delete_card_callback():
 def page_manage_cards():
     st.header("🗃️ 卡片資料庫管理")
     
-    # 手動存檔按鈕 (側邊欄也放，這裡也放方便操作)
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 💾 資料庫存檔")
     if st.sidebar.button("儲存所有變更至檔案", type="primary"):
@@ -303,7 +301,9 @@ def page_manage_cards():
             st.info("資料庫目前是空的。")
         else:
             st.subheader("🔍 選擇要管理的卡片")
-            # 選單顯示時也包含索引，方便查找
+            # 在這裡確保 inventory 是排序過的 (以防萬一)
+            sort_inventory(st.session_state['inventory'])
+            
             card_options = [f"{i+1}. {c['name']} ({c['tag']})" for i, c in enumerate(st.session_state['inventory'])]
             
             selected_idx = st.selectbox(
@@ -353,7 +353,10 @@ def page_manage_cards():
 
     if st.session_state['inventory']:
         st.markdown("---")
-        with st.expander("檢視完整資料庫清單"):
+        with st.expander("檢視完整資料庫清單", expanded=True):
+            # 確保顯示前也是排序的
+            sort_inventory(st.session_state['inventory'])
+            
             display_data = []
             for item in st.session_state['inventory']:
                 m1 = item['moves'][0]
@@ -367,8 +370,13 @@ def page_manage_cards():
                     "特殊能力": item['tag'],
                     "招式": moves_str
                 })
-            st.dataframe(pd.DataFrame(display_data), use_container_width=True)
-            # 下載按鈕 (其實跟存檔到硬碟功能重複，但下載可以存到別的地方)
+            
+            # 轉換為 DataFrame 並設定 Index 從 1 開始
+            df = pd.DataFrame(display_data)
+            df.index = range(1, len(df) + 1) # <--- 關鍵修正：索引從 1 開始
+            
+            st.dataframe(df, use_container_width=True)
+            
             json_str = json.dumps(st.session_state['inventory'], ensure_ascii=False, indent=4)
             st.download_button("⬇️ 下載 JSON 備份檔", json_str, DB_FILE)
 
@@ -430,7 +438,6 @@ def page_battle():
         
         for card in st.session_state['inventory']:
             
-            # --- 共用計算 (防禦風險) ---
             risk_factors = []
             for opp in opponents:
                 my_t1 = card['type']
