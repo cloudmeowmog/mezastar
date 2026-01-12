@@ -60,26 +60,25 @@ def save_card_images(name):
     if back:
         Image.open(back).save(os.path.join(IMG_DIR, f"{name}_後.png"), "PNG")
 
-# --- Helper: 核心辨識邏輯 (50% 縮放加速版) ---
-def detect_attribute_icons(uploaded_image):
-    # 1. 讀取圖片
-    file_bytes = np.asarray(bytearray(uploaded_image.read()), dtype=np.uint8)
-    img_bgr = cv2.imdecode(file_bytes, 1)
-    if img_bgr is None: return [[], [], []]
+# --- Helper: 核心辨識邏輯 (針對裁切後的區域) ---
+def detect_attribute_icons(cropped_image_bgr):
+    """
+    接收已經裁切好的「整排屬性圖」(BGR格式)。
+    自動將其分為 左/中/右 三區進行範本比對。
+    """
+    if cropped_image_bgr is None: return [[], [], []]
 
-    # 2. 影像前處理 (縮小 50%)
-    h, w, _ = img_bgr.shape
-    new_w, new_h = w // 2, h // 2
-    img_resized = cv2.resize(img_bgr, (new_w, new_h))
+    # 1. 影像前處理
+    # 這裡不做大幅縮放，保持裁切後的原始清晰度，或者統一到一個適當的高度
+    h, w, _ = cropped_image_bgr.shape
     
-    # 取下半部 ROI
-    start_y = int(new_h * 0.55)
-    end_y = int(new_h * 0.98)
-    img_roi = img_resized[start_y:end_y, :]
+    # 如果圖片太小，稍微放大以利特徵比對；太大則縮小加速
+    target_height = 150 # 設定一個標準高度 (屬性列通常是扁長型)
+    scale_factor = target_height / h
+    new_w = int(w * scale_factor)
+    img_resized = cv2.resize(cropped_image_bgr, (new_w, target_height))
     
-    roi_h, roi_w = img_roi.shape[:2]
-    
-    # 3. 載入範本 (Templates) 並同步縮小
+    # 2. 載入範本 (Templates)
     template_groups = {}
     if os.path.exists(ICON_DIR):
         for filename in os.listdir(ICON_DIR):
@@ -88,51 +87,62 @@ def detect_attribute_icons(uploaded_image):
                 icon_path = os.path.join(ICON_DIR, filename)
                 t_img = cv2.imread(icon_path)
                 if t_img is not None:
-                    # *** 關鍵：範本也要縮小 50% ***
-                    t_img_small = cv2.resize(t_img, (0, 0), fx=0.5, fy=0.5)
-                    
+                    # 範本也需要根據 target_height 做相對應的調整?
+                    # 其實範本通常很小(60x60)，我們讓程式自動多尺度去試比較保險
                     if type_name not in template_groups:
                         template_groups[type_name] = []
-                    template_groups[type_name].append(t_img_small)
+                    template_groups[type_name].append(t_img)
 
     if not template_groups:
-        st.warning("⚠️ 尚未建立圖示範本！請先至「🛠️ 建立圖示範本」分頁建立範本。")
         return [[], [], []]
 
-    # 4. 比對流程
+    # 3. 比對流程
     detected_results = [set(), set(), set()]
-    col_w = roi_w // 3
     
-    progress_bar = st.progress(0, text="正在進行快速掃描 (0.5x)...")
+    # 定義三個區域的邊界 (在 resized 圖上)
+    col_w = new_w // 3
+    
+    # 為了避免邊界裁切到圖示，我們讓搜尋區域稍微重疊
+    # ROIs: [img, x_offset]
+    rois = [
+        (img_resized[:, 0 : col_w + 20], 0),                 # 左
+        (img_resized[:, col_w - 20 : col_w * 2 + 20], col_w - 20), # 中
+        (img_resized[:, col_w * 2 - 20 :], col_w * 2 - 20)   # 右
+    ]
+
+    progress_bar = st.progress(0, text="正在分析選取區域...")
     total_types = len(template_groups)
     current_step = 0
 
     for type_name, templ_list in template_groups.items():
         current_step += 1
-        progress_bar.progress(int(current_step / total_types * 100), text=f"比對屬性: {type_name}")
+        progress_bar.progress(int(current_step / total_types * 100), text=f"比對: {type_name}")
 
         for templ in templ_list:
-            scales = np.linspace(0.9, 1.1, 3)
+            # 多尺度比對：因為手動裁切的大小不一，需要較寬的縮放範圍
+            scales = np.linspace(0.5, 1.5, 6)
+            
             for scale in scales:
                 t_h, t_w = templ.shape[:2]
-                new_tw, new_th = int(t_w * scale), int(t_h * scale)
+                curr_tw, curr_th = int(t_w * scale), int(t_h * scale)
                 
-                if new_tw > roi_w or new_th > roi_h: continue
+                if curr_th > target_height: continue
                 
-                resized_templ = cv2.resize(templ, (new_tw, new_th))
-                res = cv2.matchTemplate(img_roi, resized_templ, cv2.TM_CCOEFF_NORMED)
-                loc = np.where(res >= 0.7)
+                resized_templ = cv2.resize(templ, (curr_tw, curr_th))
                 
-                for pt in zip(*loc[::-1]):
-                    x, y = pt
-                    center_x = x + new_tw // 2
-                    c_idx = 0
-                    if center_x > col_w and center_x < col_w*2: c_idx = 1
-                    elif center_x >= col_w*2: c_idx = 2
-                    detected_results[c_idx].add(type_name)
+                # 在三個區域中分別尋找
+                for i, (roi_img, x_offset) in enumerate(rois):
+                    if curr_tw > roi_img.shape[1] or curr_th > roi_img.shape[0]: continue
+
+                    res = cv2.matchTemplate(roi_img, resized_templ, cv2.TM_CCOEFF_NORMED)
+                    loc = np.where(res >= 0.70) # 信心門檻
+                    
+                    if len(loc[0]) > 0:
+                        detected_results[i].add(type_name)
+                        # 該屬性在該區域找到了，換下一個區域或屬性
+                        # break (這裡不 break，因為可能同區域有多個同屬性?) -> 保持繼續
     
     progress_bar.empty()
-    uploaded_image.seek(0)
     return [list(s) for s in detected_results]
 
 # --- 初始化 Session State ---
@@ -232,9 +242,8 @@ def delete_card_callback():
 def page_template_creator():
     st.header("🛠️ 建立圖示範本 (訓練模式)")
     st.info("請上傳螢幕截圖，用滑鼠直接框選屬性圖示，然後儲存為範本。")
-    st.markdown("> **注意**：這裡建立的範本是高解析度的，程式在比對時會自動與縮小後的截圖同步處理。")
     
-    uploaded_file = st.file_uploader("上傳含有屬性圖示的照片", type=["jpg", "png", "jpeg"], key="template_uploader")
+    uploaded_file = st.file_uploader("上傳照片", type=["jpg", "png", "jpeg"], key="template_uploader")
     
     if uploaded_file:
         img = Image.open(uploaded_file)
@@ -245,7 +254,7 @@ def page_template_creator():
         col_preview, col_save = st.columns([1, 2])
         
         with col_preview:
-            st.image(cropped_img, caption="裁切預覽 (原圖解析度)", width=100)
+            st.image(cropped_img, caption="裁切預覽", width=100)
             
         with col_save:
             icon_type = st.selectbox("這是什麼屬性？", POKEMON_TYPES, key="icon_type_selector")
@@ -254,10 +263,8 @@ def page_template_creator():
                     timestamp = int(pd.Timestamp.now().timestamp())
                     save_name = f"{icon_type}_{timestamp}.png"
                     save_path = os.path.join(ICON_DIR, save_name)
-                    
                     img_array = np.array(cropped_img)
                     img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
-                    
                     cv2.imwrite(save_path, img_bgr)
                     st.success(f"✅ 已儲存範本：{save_name}")
                 else:
@@ -403,12 +410,17 @@ def get_effectiveness(atk, deff):
 
 def page_battle():
     st.header("⚔️ 對戰分析 (3 vs 3)")
-    st.info("上傳螢幕截圖，系統將比對您建立的圖示範本 (使用0.5倍縮放加速)。")
+    st.info("請將紅框調整至「包含整排有利屬性圖示」的位置，然後按「掃描」。")
     
     c_img, c_cfg = st.columns([1, 2])
+    
+    # 用來暫存裁切圖片的變數
+    cropped_result = None
+    
     with c_img:
         bf = st.file_uploader("對戰截圖", type=["jpg", "png"], key="battle_uploader")
         
+        # 自動清空邏輯
         current_file_name = bf.name if bf else ""
         if current_file_name != st.session_state.get('last_battle_img', ""):
             for i in range(3):
@@ -416,16 +428,46 @@ def page_battle():
             st.session_state['last_battle_img'] = current_file_name
 
         if bf:
-            st.image(bf, width=250)
-            if st.button("📸 掃描有利屬性", type="primary"):
-                detected = detect_attribute_icons(bf) 
-                for i in range(3):
-                    st.session_state['battle_config'][i]['detected_weakness'] = detected[i]
+            img_file = Image.open(bf)
+            # 使用 st_cropper 讓使用者選擇範圍 (紅框)
+            # aspect_ratio=None 讓使用者自由調整長寬
+            cropped_box_img = st_cropper(
+                img_file, 
+                realtime_update=True, 
+                box_color='#FF0000', 
+                aspect_ratio=None,
+                key="battle_cropper"
+            )
+            
+            # 轉換為 BGR 供後續處理
+            if cropped_box_img:
+                cropped_result = cv2.cvtColor(np.array(cropped_box_img), cv2.COLOR_RGB2BGR)
                 
-                if not any(detected):
-                    st.warning("⚠️ 未偵測到圖示。請檢查是否已建立範本。")
-                else:
-                    st.success("掃描完成！")
+                # --- 自動分割預覽 (Visual Feedback) ---
+                # 在預覽圖上畫出 綠/紅/藍 三個區塊，讓使用者知道程式會怎麼切
+                h, w, _ = cropped_result.shape
+                col_w = w // 3
+                preview_img = cropped_result.copy()
+                
+                # 左(綠)
+                cv2.rectangle(preview_img, (0, 0), (col_w, h), (0, 255, 0), 3)
+                # 中(紅) - 注意OpenCV是BGR，所以(0,0,255)是紅
+                cv2.rectangle(preview_img, (col_w, 0), (col_w*2, h), (0, 0, 255), 3)
+                # 右(藍) - (255,0,0)是藍
+                cv2.rectangle(preview_img, (col_w*2, 0), (w, h), (255, 0, 0), 3)
+                
+                # 顯示分割預覽
+                st.image(cv2.cvtColor(preview_img, cv2.COLOR_BGR2RGB), caption="系統分割預覽 (左/中/右)", use_container_width=True)
+                
+                if st.button("📸 掃描此區域", type="primary"):
+                    detected = detect_attribute_icons(cropped_result) 
+                    for i in range(3):
+                        st.session_state['battle_config'][i]['detected_weakness'] = detected[i]
+                    
+                    if not any(detected):
+                        st.warning("⚠️ 此區域未偵測到圖示，請檢查範本或調整框選位置。")
+                    else:
+                        st.success("掃描完成！")
 
     with c_cfg:
         cols = st.columns(3)
@@ -450,7 +492,6 @@ def page_battle():
     if st.button("🚀 計算最佳隊伍", type="primary"):
         if not st.session_state['inventory']: st.error("無卡片資料"); return
         
-        # --- 判斷模式：只要有任一個對手手動設定了屬性，就進入「手動優先模式」 ---
         is_manual_mode = False
         for i in range(3):
             if cfg[i]['manual_t1'] != "無" or cfg[i]['manual_t2'] != "無":
@@ -473,14 +514,12 @@ def page_battle():
                 eff_total = 0
                 for i in range(3):
                     if is_manual_mode:
-                        # 模式 1: 手動設定 (計算屬性相剋)
                         eff = get_effectiveness(m['type'], cfg[i]['manual_t1']) * get_effectiveness(m['type'], cfg[i]['manual_t2'])
                     else:
-                        # 模式 2: 自動偵測 (若為有利屬性則加成)
                         if m['type'] in cfg[i]['detected_weakness']:
                             eff = 2.5
                         else:
-                            eff = 1.0 # 非有利屬性視為普通
+                            eff = 1.0
                     
                     eff_total += eff
                 
