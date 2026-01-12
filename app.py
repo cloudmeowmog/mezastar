@@ -450,6 +450,16 @@ def page_battle():
     if st.button("🚀 計算最佳隊伍", type="primary"):
         if not st.session_state['inventory']: st.error("無卡片資料"); return
         
+        # --- 判斷模式：只要有任一個對手手動設定了屬性，就進入「手動優先模式」 ---
+        is_manual_mode = False
+        for i in range(3):
+            if cfg[i]['manual_t1'] != "無" or cfg[i]['manual_t2'] != "無":
+                is_manual_mode = True
+                break
+        
+        mode_text = "手動屬性優先模式" if is_manual_mode else "自動偵測有利屬性模式"
+        st.info(f"💡 目前使用：**{mode_text}**")
+        
         cands = []
         for card in st.session_state['inventory']:
             atk_v = card.get('attack', 100)
@@ -462,9 +472,16 @@ def page_battle():
                 if not m['name']: continue
                 eff_total = 0
                 for i in range(3):
-                    eff = get_effectiveness(m['type'], cfg[i]['manual_t1']) * get_effectiveness(m['type'], cfg[i]['manual_t2'])
-                    if m['type'] in cfg[i]['detected_weakness']:
-                        eff = max(eff, 2.5)
+                    if is_manual_mode:
+                        # 模式 1: 手動設定 (計算屬性相剋)
+                        eff = get_effectiveness(m['type'], cfg[i]['manual_t1']) * get_effectiveness(m['type'], cfg[i]['manual_t2'])
+                    else:
+                        # 模式 2: 自動偵測 (若為有利屬性則加成)
+                        if m['type'] in cfg[i]['detected_weakness']:
+                            eff = 2.5
+                        else:
+                            eff = 1.0 # 非有利屬性視為普通
+                    
                     eff_total += eff
                 
                 base = atk_v if m.get('category') == '攻擊' else sp_atk_v
@@ -479,7 +496,6 @@ def page_battle():
             if tag in ["極巨化", "Z招式"]: score_s *= 1.3
             elif tag != "無": score_s *= 1.15
             
-            # 加入 original_tag 以便稍後識別
             cands.append({
                 "name": card['name'], 
                 "mode": "special", 
@@ -496,14 +512,19 @@ def page_battle():
                 if m['name']:
                     eff_total = 0
                     for i in range(3):
-                        eff = get_effectiveness(m['type'], cfg[i]['manual_t1']) * get_effectiveness(m['type'], cfg[i]['manual_t2'])
-                        if m['type'] in cfg[i]['detected_weakness']: eff = max(eff, 2.5)
+                        if is_manual_mode:
+                            eff = get_effectiveness(m['type'], cfg[i]['manual_t1']) * get_effectiveness(m['type'], cfg[i]['manual_t2'])
+                        else:
+                            if m['type'] in cfg[i]['detected_weakness']:
+                                eff = 2.5
+                            else:
+                                eff = 1.0
+                        
                         eff_total += eff
                     
                     base = atk_v if m.get('category') == '攻擊' else sp_atk_v
                     dmg = base * 1.0 * eff_total
                     
-                    # 關鍵：Mode B 的 tag 設為"無"，但保留 original_tag
                     cands.append({
                         "name": card['name'], 
                         "mode": "normal", 
@@ -531,17 +552,10 @@ def page_battle():
         for i, p in enumerate(team):
             with cols[i]:
                 t_txt = p['tag']
-                
-                # --- 顯示邏輯修正 ---
                 if t_txt == "Mega進化":
-                    # 主動使用 Mega (Mode A)
                     t_txt = "一般招式 (Mega進化)"
                 elif p['mode'] == 'normal' and p['original_tag'] != "無":
-                    # 被降級為一般模式 (Mode B)，檢查原本是否有特殊標籤
                     if p['original_tag'] == "Mega進化":
-                        # 這裡依您的邏輯，若被降級可能代表不使用 Mega? 
-                        # 但 Mezastar 通常綁定卡片本身。
-                        # 若您希望 Mega 卡片無論如何都顯示 Mega：
                         t_txt = "一般招式 (Mega進化)" 
                     else:
                         t_txt = "一般招式 (保留特殊)"
