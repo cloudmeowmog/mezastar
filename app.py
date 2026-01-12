@@ -158,12 +158,12 @@ def fill_edit_fields():
     st.session_state['edit_m2_type_input'] = m2['type']
     st.session_state['edit_m2_cat_input'] = m2.get('category', '攻擊')
 
-# --- 彈出視窗：顯示卡片圖片 (新增功能) ---
+# --- 彈出視窗：顯示卡片圖片 ---
 @st.dialog("卡片影像預覽", width="large")
 def show_card_image_modal(card_name):
     st.subheader(card_name)
     
-    col_img, col_txt = st.columns([1, 0.1]) # 調整比例讓圖置中
+    col_img, col_txt = st.columns([1, 0.1])
     
     f_path = os.path.join(IMG_DIR, f"{card_name}_前.png")
     b_path = os.path.join(IMG_DIR, f"{card_name}_後.png")
@@ -428,20 +428,15 @@ def page_manage_cards():
             df = pd.DataFrame(display_data)
             df.index = range(1, len(df) + 1)
             
-            # --- 關鍵修改：啟用選取功能 (on_select) ---
             event = st.dataframe(
                 df, 
                 use_container_width=True, 
-                on_select="rerun", # 選取後重新執行以觸發視窗
+                on_select="rerun", 
                 selection_mode="single-row"
             )
             
-            # 檢查是否有選取，若有則彈出視窗
             if len(event.selection.rows) > 0:
                 selected_idx = event.selection.rows[0]
-                # 從 DataFrame 拿到名稱 (因為 df 有重新排序過，需小心)
-                # event.selection.rows 回傳的是顯示順序的 index (0-based)
-                # 我們的 inventory 已經 sort 過，順序應與 df 一致
                 selected_card_name = st.session_state['inventory'][selected_idx]['name']
                 show_card_image_modal(selected_card_name)
             
@@ -540,8 +535,12 @@ def page_battle():
             
             score_special = max_aoe_special / safe_risk
             tag_name = card['tag']
-            if tag_name != '無':
-                score_special *= 1.2
+            
+            # 優先權重修正：極巨化/Z招式 優先 (x1.3)，其他特殊 (x1.15)
+            if tag_name in ["極巨化", "Z招式"]:
+                score_special *= 1.3
+            elif tag_name != '無':
+                score_special *= 1.15
             
             best_move_display_special = best_move_special
             
@@ -560,8 +559,10 @@ def page_battle():
                 max_aoe_normal = 0
                 best_move_normal = ""
                 
-                for idx, move in enumerate(card['moves']):
-                    if not move['name']: continue
+                # 關鍵修正：若降級為一般模式，強制只評估「第一招」(index 0)
+                # 避免推薦第二招 (通常是特殊招式)
+                move = card['moves'][0]
+                if move['name']:
                     eff_sum = 0
                     for opp in opponents:
                         eff_sum += calculate_dual_effectiveness(move['type'], opp['t1'], opp['t2'])
@@ -569,12 +570,11 @@ def page_battle():
                     cat = move.get('category', '攻擊')
                     base_stat = stat_atk if cat == '攻擊' else stat_sp_atk
                     
-                    power_mult = 1.2 if idx == 1 else 1.0
-                    total = base_stat * power_mult * eff_sum
+                    # 第一招係數固定為 1.0
+                    total = base_stat * 1.0 * eff_sum
                     
-                    if total > max_aoe_normal:
-                        max_aoe_normal = total
-                        best_move_normal = f"{move['name']}({move['type']}/{cat})"
+                    max_aoe_normal = total
+                    best_move_normal = f"{move['name']}({move['type']}/{cat})"
                 
                 score_normal = max_aoe_normal / safe_risk
                 
