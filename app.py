@@ -323,6 +323,7 @@ def page_battle():
             st.session_state['battle_config'][i]['detected_weakness'] = []
         st.session_state['last_battle_img'] = current_file_name
 
+    cropped_result = None
     if bf:
         img_file = Image.open(bf)
         st.markdown("### 1. 截取屬性區域")
@@ -470,7 +471,7 @@ def page_battle():
                         "name": card['name'], 
                         "mode": "normal", 
                         "tag": "無", 
-                        "original_tag": tag,
+                        "original_tag": tag, 
                         "move": f"{m['name']}({m['type']})", 
                         "score": dmg, 
                         "dmg": dmg
@@ -506,7 +507,7 @@ def page_battle():
                 st.success(f"**第 {i+1} 棒**\n\n### {p['name']}\n* **模式**: {t_txt}\n* **建議**: {p['move']}\n* **預估火力**: {int(p['dmg'])}")
 
 # --- Main ---
-# *** 這裡就是之前遺失的部分 ***
+# 確保這部分在程式最底端
 page = st.sidebar.radio("模式", ["卡片資料庫管理", "對戰分析", "🛠️ 建立圖示範本"])
 if page == "卡片資料庫管理": page_manage_cards()
 elif page == "🛠️ 建立圖示範本": page_template_creator()
