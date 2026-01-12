@@ -60,6 +60,81 @@ def save_card_images(name):
     if back:
         Image.open(back).save(os.path.join(IMG_DIR, f"{name}_後.png"), "PNG")
 
+# --- Helper: 核心辨識邏輯 (50% 縮放加速版) ---
+def detect_attribute_icons(uploaded_image):
+    # 1. 讀取圖片
+    file_bytes = np.asarray(bytearray(uploaded_image.read()), dtype=np.uint8)
+    img_bgr = cv2.imdecode(file_bytes, 1)
+    if img_bgr is None: return [[], [], []]
+
+    # 2. 影像前處理 (縮小 50%)
+    h, w, _ = img_bgr.shape
+    new_w, new_h = w // 2, h // 2
+    img_resized = cv2.resize(img_bgr, (new_w, new_h))
+    
+    # 取下半部 ROI
+    start_y = int(new_h * 0.55)
+    end_y = int(new_h * 0.98)
+    img_roi = img_resized[start_y:end_y, :]
+    
+    roi_h, roi_w = img_roi.shape[:2]
+    
+    # 3. 載入範本 (Templates) 並同步縮小
+    template_groups = {}
+    if os.path.exists(ICON_DIR):
+        for filename in os.listdir(ICON_DIR):
+            if filename.endswith(".png"):
+                type_name = filename.split("_")[0]
+                icon_path = os.path.join(ICON_DIR, filename)
+                t_img = cv2.imread(icon_path)
+                if t_img is not None:
+                    # *** 關鍵：範本也要縮小 50% ***
+                    t_img_small = cv2.resize(t_img, (0, 0), fx=0.5, fy=0.5)
+                    
+                    if type_name not in template_groups:
+                        template_groups[type_name] = []
+                    template_groups[type_name].append(t_img_small)
+
+    if not template_groups:
+        st.warning("⚠️ 尚未建立圖示範本！請先至「🛠️ 建立圖示範本」分頁建立範本。")
+        return [[], [], []]
+
+    # 4. 比對流程
+    detected_results = [set(), set(), set()]
+    col_w = roi_w // 3
+    
+    progress_bar = st.progress(0, text="正在進行快速掃描 (0.5x)...")
+    total_types = len(template_groups)
+    current_step = 0
+
+    for type_name, templ_list in template_groups.items():
+        current_step += 1
+        progress_bar.progress(int(current_step / total_types * 100), text=f"比對屬性: {type_name}")
+
+        for templ in templ_list:
+            scales = np.linspace(0.9, 1.1, 3)
+            for scale in scales:
+                t_h, t_w = templ.shape[:2]
+                new_tw, new_th = int(t_w * scale), int(t_h * scale)
+                
+                if new_tw > roi_w or new_th > roi_h: continue
+                
+                resized_templ = cv2.resize(templ, (new_tw, new_th))
+                res = cv2.matchTemplate(img_roi, resized_templ, cv2.TM_CCOEFF_NORMED)
+                loc = np.where(res >= 0.7)
+                
+                for pt in zip(*loc[::-1]):
+                    x, y = pt
+                    center_x = x + new_tw // 2
+                    c_idx = 0
+                    if center_x > col_w and center_x < col_w*2: c_idx = 1
+                    elif center_x >= col_w*2: c_idx = 2
+                    detected_results[c_idx].add(type_name)
+    
+    progress_bar.empty()
+    uploaded_image.seek(0)
+    return [list(s) for s in detected_results]
+
 # --- Helper: 針對裁切區域的辨識邏輯 ---
 def detect_attribute_icons_from_crop(cropped_image_bgr):
     """
@@ -284,36 +359,11 @@ def page_template_creator():
             st.info("目前沒有範本。")
 
 # --- Page: Battle Analysis ---
-TYPE_CHART = {
-    "一般": {"岩石": 0.5, "幽靈": 0, "鋼": 0.5},
-    "火": {"草": 2, "冰": 2, "蟲": 2, "鋼": 2, "水": 0.5, "火": 0.5, "岩石": 0.5, "龍": 0.5},
-    "水": {"火": 2, "地面": 2, "岩石": 2, "水": 0.5, "草": 0.5, "龍": 0.5},
-    "電": {"水": 2, "飛行": 2, "地面": 0, "電": 0.5, "草": 0.5, "龍": 0.5},
-    "草": {"水": 2, "地面": 2, "岩石": 2, "火": 0.5, "草": 0.5, "毒": 0.5, "飛行": 0.5, "蟲": 0.5, "龍": 0.5, "鋼": 0.5},
-    "冰": {"草": 2, "地面": 2, "飛行": 2, "龍": 2, "火": 0.5, "冰": 0.5, "鋼": 0.5, "水": 0.5},
-    "格鬥": {"一般": 2, "冰": 2, "岩石": 2, "惡": 2, "鋼": 2, "幽靈": 0, "毒": 0.5, "飛行": 0.5, "超能力": 0.5, "蟲": 0.5, "妖精": 0.5},
-    "毒": {"草": 2, "妖精": 2, "毒": 0.5, "地面": 0.5, "幽靈": 0.5, "岩石": 0.5, "鋼": 0},
-    "地面": {"火": 2, "電": 2, "毒": 2, "岩石": 2, "鋼": 2, "飛行": 0, "草": 0.5, "蟲": 0.5},
-    "飛行": {"草": 2, "格鬥": 2, "蟲": 2, "電": 0.5, "岩石": 0.5, "鋼": 0.5},
-    "超能力": {"格鬥": 2, "毒": 2, "超能力": 0.5, "惡": 0, "鋼": 0.5},
-    "蟲": {"草": 2, "超能力": 2, "惡": 2, "火": 0.5, "飛行": 0.5, "幽靈": 0.5, "格鬥": 0.5, "毒": 0.5, "鋼": 0.5, "妖精": 0.5},
-    "岩石": {"火": 2, "冰": 2, "飛行": 2, "蟲": 2, "格鬥": 0.5, "地面": 0.5, "鋼": 0.5},
-    "幽靈": {"超能力": 2, "幽靈": 2, "一般": 0, "惡": 0.5},
-    "龍": {"龍": 2, "鋼": 0.5, "妖精": 0},
-    "惡": {"幽靈": 2, "超能力": 2, "格鬥": 0.5, "妖精": 0.5, "惡": 0.5},
-    "鋼": {"冰": 2, "岩石": 2, "妖精": 2, "火": 0.5, "水": 0.5, "電": 0.5, "鋼": 0.5},
-    "妖精": {"格鬥": 2, "龍": 2, "惡": 2, "毒": 0.5, "鋼": 0.5, "火": 0.5}
-}
-
-def get_effectiveness(atk, deff):
-    if deff == "無" or atk == "無": return 1.0
-    return TYPE_CHART.get(atk, {}).get(deff, 1.0)
-
 def page_battle():
     st.header("⚔️ 對戰分析 (3 vs 3)")
     st.info("請上傳螢幕截圖，並使用紅框選取「整排有利屬性圖示」，程式會自動將其切分為 左/中/右 進行掃描。")
     
-    # 1. 圖片上傳與裁切區域 (全寬顯示)
+    # 1. 圖片上傳與裁切區域 (全寬顯示，不再被擠在左欄)
     bf = st.file_uploader("對戰截圖", type=["jpg", "png"], key="battle_uploader")
     
     # 自動清空邏輯
@@ -329,7 +379,7 @@ def page_battle():
         st.markdown("### 1. 截取屬性區域")
         st.markdown("👇 **請用滑鼠調整紅框，使其包住三個對手的有利屬性區域：**")
         
-        # 使用 st_cropper 讓使用者選擇範圍
+        # 使用 st_cropper 讓使用者選擇範圍，不限制長寬比
         cropped_box_img = st_cropper(
             img_file, 
             realtime_update=True, 
@@ -378,6 +428,8 @@ def page_battle():
             # 顯示偵測結果
             if det_list:
                 st.markdown(f"**偵測到的有利屬性:**")
+                # 用 emoji 或文字顯示
+                # 為了美觀，這邊可以用 st.image 如果有圖示的話，這裡簡化用文字
                 icon_html = ""
                 for dt in det_list:
                     icon_html += f" ` {dt} ` "
@@ -471,7 +523,7 @@ def page_battle():
                         "name": card['name'], 
                         "mode": "normal", 
                         "tag": "無", 
-                        "original_tag": tag, 
+                        "original_tag": tag,
                         "move": f"{m['name']}({m['type']})", 
                         "score": dmg, 
                         "dmg": dmg
@@ -507,7 +559,6 @@ def page_battle():
                 st.success(f"**第 {i+1} 棒**\n\n### {p['name']}\n* **模式**: {t_txt}\n* **建議**: {p['move']}\n* **預估火力**: {int(p['dmg'])}")
 
 # --- Main ---
-# 確保這部分在程式最底端
 page = st.sidebar.radio("模式", ["卡片資料庫管理", "對戰分析", "🛠️ 建立圖示範本"])
 if page == "卡片資料庫管理": page_manage_cards()
 elif page == "🛠️ 建立圖示範本": page_template_creator()
