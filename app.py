@@ -3,9 +3,11 @@ import pandas as pd
 import json
 import os
 import numpy as np
-import cv2 # pip install opencv-python-headless
+import cv2 # 需安裝: pip install opencv-python-headless
 from PIL import Image
-from streamlit_cropper import st_cropper # 必須安裝: pip install streamlit-cropper
+# 必須安裝: pip install streamlit-cropper
+# 線上版請務必在 requirements.txt 加入 streamlit-cropper
+from streamlit_cropper import st_cropper 
 
 # --- 設定頁面 ---
 st.set_page_config(page_title="Mezastar 檔案室", layout="wide", page_icon="🗃️")
@@ -58,10 +60,11 @@ def save_card_images(name):
     if back:
         Image.open(back).save(os.path.join(IMG_DIR, f"{name}_後.png"), "PNG")
 
-# --- Helper: 核心辨識邏輯 (多重尺度模板匹配) ---
+# --- Helper: 核心辨識邏輯 (支援多範本) ---
 def detect_attribute_icons(uploaded_image):
     """
-    使用使用者自行定義的「真實範本」進行比對。
+    使用 att_icon 中的所有範本進行比對。
+    只要任何一個範本匹配成功，即視為偵測到該屬性。
     """
     # 1. 讀取圖片
     file_bytes = np.asarray(bytearray(uploaded_image.read()), dtype=np.uint8)
@@ -81,52 +84,69 @@ def detect_attribute_icons(uploaded_image):
     
     roi_h, roi_w = img_roi.shape[:2]
     
-    # 3. 載入範本 (Templates)
-    templates = {}
+    # 3. 載入所有範本 (Templates)
+    # 結構: {'火': [img1, img2...], '水': [img1...]}
+    template_groups = {}
+    
     if os.path.exists(ICON_DIR):
         for filename in os.listdir(ICON_DIR):
             if filename.endswith(".png"):
-                type_name = filename.split(".")[0].split("_")[0]
+                # 檔名格式: "火_123456.png" -> 取 "火"
+                type_name = filename.split("_")[0]
                 icon_path = os.path.join(ICON_DIR, filename)
                 t_img = cv2.imread(icon_path)
                 if t_img is not None:
-                    templates[filename] = (type_name, t_img)
+                    if type_name not in template_groups:
+                        template_groups[type_name] = []
+                    template_groups[type_name].append(t_img)
 
-    if not templates:
-        st.warning("⚠️ 尚未建立圖示範本！請先至「🛠️ 建立圖示範本」分頁。")
+    if not template_groups:
+        st.warning("⚠️ 尚未建立圖示範本！請先至「🛠️ 建立圖示範本」分頁建立範本。")
         return [[], [], []]
 
     # 4. 比對流程
     detected_results = [set(), set(), set()]
     col_w = roi_w // 3
     
-    for fname, (type_name, templ) in templates.items():
-        # 微幅縮放 (0.8 ~ 1.2) 適應不同拍攝距離
-        scales = np.linspace(0.8, 1.2, 5)
-        
-        for scale in scales:
-            t_h, t_w = templ.shape[:2]
-            new_tw, new_th = int(t_w * scale), int(t_h * scale)
-            
-            if new_tw > roi_w or new_th > roi_h: continue
-            
-            resized_templ = cv2.resize(templ, (new_tw, new_th))
-            
-            # 使用 TM_CCOEFF_NORMED
-            res = cv2.matchTemplate(img_roi, resized_templ, cv2.TM_CCOEFF_NORMED)
-            
-            # 門檻設為 0.7 (因為是真實截圖對比，吻合度會很高)
-            loc = np.where(res >= 0.7)
-            
-            for pt in zip(*loc[::-1]):
-                x, y = pt
-                center_x = x + new_tw // 2
-                c_idx = 0
-                if center_x > col_w and center_x < col_w*2: c_idx = 1
-                elif center_x >= col_w*2: c_idx = 2
-                
-                detected_results[c_idx].add(type_name)
+    # 進度條
+    progress_bar = st.progress(0, text="正在比對範本...")
+    total_types = len(template_groups)
+    current_step = 0
 
+    # 針對每一種屬性類型
+    for type_name, templ_list in template_groups.items():
+        current_step += 1
+        progress_bar.progress(int(current_step / total_types * 100), text=f"比對屬性: {type_name} ({len(templ_list)} 個範本)")
+
+        # 針對該屬性的每一個範本
+        for templ in templ_list:
+            # 微幅縮放 (0.85 ~ 1.15) 適應不同拍攝距離
+            scales = np.linspace(0.85, 1.15, 4)
+            
+            for scale in scales:
+                t_h, t_w = templ.shape[:2]
+                new_tw, new_th = int(t_w * scale), int(t_h * scale)
+                
+                if new_tw > roi_w or new_th > roi_h: continue
+                
+                resized_templ = cv2.resize(templ, (new_tw, new_th))
+                
+                # 使用 TM_CCOEFF_NORMED
+                res = cv2.matchTemplate(img_roi, resized_templ, cv2.TM_CCOEFF_NORMED)
+                
+                # 門檻設為 0.72 (稍微提高一點，避免多範本造成誤判增加)
+                loc = np.where(res >= 0.72)
+                
+                for pt in zip(*loc[::-1]):
+                    x, y = pt
+                    center_x = x + new_tw // 2
+                    c_idx = 0
+                    if center_x > col_w and center_x < col_w*2: c_idx = 1
+                    elif center_x >= col_w*2: c_idx = 2
+                    
+                    detected_results[c_idx].add(type_name)
+    
+    progress_bar.empty()
     uploaded_image.seek(0)
     return [list(s) for s in detected_results]
 
@@ -224,18 +244,17 @@ def delete_card_callback():
 # --- Page: Template Creator (滑鼠框選版) ---
 def page_template_creator():
     st.header("🛠️ 建立圖示範本 (訓練模式)")
-    st.info("請上傳螢幕截圖，用滑鼠直接框選屬性圖示，然後儲存為範本。")
+    st.info("💡 技巧：針對同一個屬性，從不同照片中多截取幾個範本，能大幅提高辨識成功率！")
     
     uploaded_file = st.file_uploader("上傳含有屬性圖示的照片", type=["jpg", "png", "jpeg"], key="template_uploader")
     
     if uploaded_file:
         img = Image.open(uploaded_file)
         
-        # 使用 streamlit-cropper 進行滑鼠框選
-        st.markdown("👇 **直接在下方圖片上用滑鼠拖曳框選一個圖示：**")
+        st.markdown("👇 **請用滑鼠框選一個圖示 (盡量只框圖示本身，不要留太多背景)：**")
         
-        # box_color: 框框顏色, aspect_ratio: 設為 None 自由調整, 或 (1,1) 固定正方形
-        cropped_img = st_cropper(img, realtime_update=True, box_color='#FF0000', aspect_ratio=None, key="cropper")
+        # 實時裁切
+        cropped_img = st_cropper(img, realtime_update=True, box_color='#FF0000', aspect_ratio=(1,1), key="cropper")
         
         st.markdown("---")
         col_preview, col_save = st.columns([1, 2])
@@ -248,7 +267,7 @@ def page_template_creator():
             
             if st.button("💾 儲存此範本"):
                 if cropped_img:
-                    # 檔名加入時間戳記，避免同屬性覆蓋
+                    # 檔名加入時間戳記，避免同屬性覆蓋，實現多範本
                     timestamp = int(pd.Timestamp.now().timestamp())
                     save_name = f"{icon_type}_{timestamp}.png"
                     save_path = os.path.join(ICON_DIR, save_name)
@@ -259,26 +278,35 @@ def page_template_creator():
                     
                     cv2.imwrite(save_path, img_bgr)
                     st.success(f"✅ 已儲存範本：{save_name}")
-                    # 不使用 st.rerun()，讓使用者可以繼續裁切同一張圖的其他圖示
+                    # 不使用 st.rerun()，讓使用者可以繼續裁切
                 else:
                     st.error("裁切無效")
 
-    # 管理現有範本
+    # 管理現有範本 (依屬性分組顯示)
     st.markdown("---")
     st.markdown("### 📚 目前的圖示範本庫")
     if os.path.exists(ICON_DIR):
         files = os.listdir(ICON_DIR)
+        files.sort()
         if files:
-            # 簡單過濾非圖片
             img_files = [f for f in files if f.endswith(".png")]
             if img_files:
+                # 統計數量
+                count_dict = {}
+                for f in img_files:
+                    t = f.split("_")[0]
+                    count_dict[t] = count_dict.get(t, 0) + 1
+                
+                st.write(f"總計 {len(img_files)} 個範本。建議每個屬性至少有 2-3 個範本。")
+                
+                # 顯示圖片
                 cols = st.columns(8)
                 for i, f in enumerate(img_files):
                     with cols[i % 8]:
                         st.image(os.path.join(ICON_DIR, f), caption=f.split("_")[0])
                         if st.button("🗑️", key=f"del_{f}"):
                             os.remove(os.path.join(ICON_DIR, f))
-                            st.rerun() # 刪除後需要刷新
+                            st.rerun() 
             else:
                 st.info("資料夾內無 PNG 圖片。")
         else:
