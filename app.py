@@ -57,124 +57,135 @@ def save_card_images(name):
     if back:
         Image.open(back).save(os.path.join(IMG_DIR, f"{name}_後.png"), "PNG")
 
-# --- Helper: 多重尺度圖示比對 (Multi-Scale Template Matching with Mask) ---
+# --- Helper: 精準圖示偵測 (NMS + Adaptive Threshold) ---
 def detect_attribute_icons(uploaded_image):
     """
-    策略：
-    1. 將圖片 resize 到較高解析度 (寬 2000px)，確保小圖示清晰。
-    2. 切割下半部 ROI。
-    3. 對於每個 att_icon 範本，嘗試多種縮放比例進行比對。
-    4. 使用 Alpha Mask (透明遮罩) 忽略背景，只比對圖示紋路。
+    1. 影像前處理 (自適應二值化 + 形態學)
+    2. 尋找方框輪廓 (嚴格篩選長寬比與面積)
+    3. 內容比對 (Template Matching)
+    4. ***關鍵***: 使用 NMS (非極大值抑制) 去除重疊誤判
     """
     # 1. 讀取圖片
     file_bytes = np.asarray(bytearray(uploaded_image.read()), dtype=np.uint8)
     img_bgr = cv2.imdecode(file_bytes, 1)
     
-    if img_bgr is None:
-        return [[], [], []]
+    if img_bgr is None: return [[], [], []]
 
     # 2. 影像前處理
-    # 提高解析度到 2000px 寬，避免縮太小導致圖示糊掉
-    target_width = 2000
+    target_width = 1600 # 提高解析度以利小圖示辨識
     h, w, _ = img_bgr.shape
-    scale_factor = target_width / w
-    new_h = int(h * scale_factor)
+    scale = target_width / w
+    new_h = int(h * scale)
     img_resized = cv2.resize(img_bgr, (target_width, new_h))
     
-    # 取下半部 ROI (0.55 ~ 0.98) 避開最底部的按鈕和上方的寶可夢
+    # 取下半部 ROI (0.55 ~ 0.95)
     start_y = int(new_h * 0.55)
-    end_y = int(new_h * 0.98)
+    end_y = int(new_h * 0.95)
     img_roi = img_resized[start_y:end_y, :]
     
-    # 3. 載入範本 (Templates) - 讀取透明通道
+    # 轉灰階 & 自適應二值化
+    gray = cv2.cvtColor(img_roi, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                   cv2.THRESH_BINARY_INV, 15, 3)
+    
+    # 3. 尋找輪廓
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    roi_h, roi_w = img_roi.shape[:2]
+    
+    # 4. 準備範本
     templates = {}
+    STANDARD_SIZE = (64, 64)
     if os.path.exists(ICON_DIR):
         for filename in os.listdir(ICON_DIR):
             if filename.endswith(".png"):
                 type_name = filename.replace(".png", "")
-                icon_path = os.path.join(ICON_DIR, filename)
-                
-                # 讀取包含 Alpha 的圖片
-                templ_rgba = cv2.imread(icon_path, cv2.IMREAD_UNCHANGED)
-                
-                if templ_rgba is not None:
-                    # 分離 RGB 與 Alpha (Mask)
-                    if templ_rgba.shape[2] == 4:
-                        templ_bgr = templ_rgba[:, :, :3]
-                        templ_mask = templ_rgba[:, :, 3]
-                    else:
-                        templ_bgr = templ_rgba
-                        templ_mask = None
-                    
-                    templates[type_name] = (templ_bgr, templ_mask)
+                path = os.path.join(ICON_DIR, filename)
+                t_img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+                if t_img is not None:
+                    templates[type_name] = cv2.resize(t_img, STANDARD_SIZE)
 
-    if not templates:
-        st.warning("⚠️ `att_icon` 資料夾為空，無法進行比對。")
-        return [[], [], []]
+    if not templates: return [[], [], []]
 
-    detected_results = [set(), set(), set()]
-    roi_h, roi_w = img_roi.shape[:2]
+    # 儲存所有候選框 (x, y, w, h, score, label, col_idx)
+    candidates = []
     col_w = roi_w // 3
 
-    # 4. 多重尺度比對
-    # 假設範本寬度約 50-80px，在 2000px 寬的圖中，圖示可能變大或變小
-    # 嘗試縮放範本從 0.5倍 到 1.5倍
-    scales = np.linspace(0.5, 1.5, 10) 
-    threshold = 0.75 # 信心門檻 (有 Mask 輔助，可以設高一點避免誤判)
-
-    # 顯示進度條，因為多尺度比對運算量較大
-    progress_bar = st.progress(0, text="正在進行高解析度掃描...")
-    total_steps = len(templates)
-    step = 0
-
-    for type_name, (templ, mask) in templates.items():
-        step += 1
-        progress_bar.progress(int(step / total_steps * 100), text=f"掃描屬性: {type_name}")
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < 1200 or area > 10000: continue # 調整面積範圍 (針對 1600px 寬度)
+            
+        x, y, w, h = cv2.boundingRect(cnt)
+        aspect_ratio = float(w) / h
         
-        for scale in scales:
-            # 縮放範本
-            t_w = int(templ.shape[1] * scale)
-            t_h = int(templ.shape[0] * scale)
+        # 嚴格篩選正方形 (0.8 ~ 1.25)
+        if 0.8 < aspect_ratio < 1.25:
+            # Crop & Resize
+            pad = 2
+            x1, y1 = max(0, x-pad), max(0, y-pad)
+            x2, y2 = min(roi_w, x+w+pad), min(roi_h, y+h+pad)
+            crop = img_roi[y1:y2, x1:x2]
+            if crop.size == 0: continue
             
-            if t_w > roi_w or t_h > roi_h or t_w < 20: continue
+            crop_gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+            crop_resized = cv2.resize(crop_gray, STANDARD_SIZE)
             
-            resized_templ = cv2.resize(templ, (t_w, t_h))
-            resized_mask = None
-            if mask is not None:
-                resized_mask = cv2.resize(mask, (t_w, t_h))
+            # Match
+            best_score = -1
+            best_label = None
             
-            try:
-                # 使用 TM_CCORR_NORMED 配合 Mask 是最準確的形狀比對
-                if resized_mask is not None:
-                    res = cv2.matchTemplate(img_roi, resized_templ, cv2.TM_CCORR_NORMED, mask=resized_mask)
-                    loc = np.where(res >= 0.92) # CCORR 需要極高門檻 (0.92+)
-                else:
-                    # 如果沒有透明背景，退回使用 CCOEFF_NORMED
-                    res = cv2.matchTemplate(img_roi, resized_templ, cv2.TM_CCOEFF_NORMED)
-                    loc = np.where(res >= 0.7)
+            for t_name, t_img in templates.items():
+                res = cv2.matchTemplate(crop_resized, t_img, cv2.TM_CCOEFF_NORMED)
+                score = np.max(res)
+                if score > best_score:
+                    best_score = score
+                    best_label = t_name
+            
+            # *** 提高門檻至 0.65 ***
+            if best_score > 0.65:
+                # 判斷區域
+                cx = x + w // 2
+                c_idx = 0
+                if cx > col_w and cx < col_w*2: c_idx = 1
+                elif cx >= col_w*2: c_idx = 2
+                
+                # 加入候選名單 (不直接決定，交給 NMS 過濾)
+                candidates.append({
+                    'box': [x, y, w, h],
+                    'score': best_score,
+                    'label': best_label,
+                    'col': c_idx
+                })
 
-                # 處理匹配結果
-                for pt in zip(*loc[::-1]): # pt is (x, y)
-                    x, y = pt
-                    # 判斷位置 (左/中/右)
-                    center_x = x + t_w // 2
-                    
-                    c_idx = 0
-                    if center_x > col_w and center_x < col_w*2:
-                        c_idx = 1
-                    elif center_x >= col_w*2:
-                        c_idx = 2
-                    
-                    detected_results[c_idx].add(type_name)
-                    
-            except Exception:
-                continue
-
-    progress_bar.empty()
-    uploaded_image.seek(0)
+    # 5. 非極大值抑制 (NMS) - 去除重疊框
+    # 簡單實作：若兩個框重疊度高，只留分數高的
+    final_results = [set(), set(), set()]
     
-    # 轉回 list
-    return [list(s) for s in detected_results]
+    # 依分數排序 (高到低)
+    candidates.sort(key=lambda k: k['score'], reverse=True)
+    
+    kept_boxes = []
+    for cand in candidates:
+        is_duplicate = False
+        x1, y1, w1, h1 = cand['box']
+        
+        for keep in kept_boxes:
+            # 檢查重疊 (IoU 簡化版: 檢查中心點距離)
+            kx, ky, kw, kh = keep['box']
+            dist = np.sqrt((x1-kx)**2 + (y1-ky)**2)
+            
+            # 如果距離太近 (< 寬度的一半)，視為同一個圖示的重複偵測
+            if dist < max(w1, kw) * 0.5:
+                is_duplicate = True
+                break
+        
+        if not is_duplicate:
+            kept_boxes.append(cand)
+            final_results[cand['col']].add(cand['label'])
+
+    uploaded_image.seek(0)
+    return [list(s) for s in final_results]
 
 # --- 初始化 Session State ---
 if 'inventory' not in st.session_state:
@@ -289,7 +300,7 @@ def page_manage_cards():
                     n = os.path.splitext(f.name)[0].replace("_前", "").replace("_front", "")
                     st.session_state['add_name_input'] = n
                     st.session_state['last_p'] = f.name
-                    # Removed st.rerun() to fix no-op warning
+                    # No st.rerun()
             if b: st.image(b, caption="背面預覽", use_container_width=True)
         with c2:
             with st.form("add"):
@@ -387,11 +398,12 @@ def get_effectiveness(atk, deff):
 
 def page_battle():
     st.header("⚔️ 對戰分析 (3 vs 3)")
-    st.info("上傳螢幕截圖，系統將使用「高解析度圖示比對」技術掃描「有利屬性」。")
+    st.info("上傳螢幕截圖，系統將使用「方框偵測」技術掃描「有利屬性」圖示。")
     
     c_img, c_cfg = st.columns([1, 2])
     with c_img:
         bf = st.file_uploader("對戰截圖", type=["jpg", "png"])
+        
         if bf:
             st.image(bf, width=250)
             if st.button("📸 掃描有利屬性", type="primary"):
