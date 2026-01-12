@@ -60,41 +60,46 @@ def save_card_images(name):
     if back:
         Image.open(back).save(os.path.join(IMG_DIR, f"{name}_後.png"), "PNG")
 
-# --- Helper: 核心辨識邏輯 (原始解析度 + 多重尺度) ---
+# --- Helper: 核心辨識邏輯 (50% 縮放加速版) ---
 def detect_attribute_icons(uploaded_image):
     """
-    使用原始解析度進行比對，不進行任何縮小，保留最大細節。
+    策略：
+    1. 將輸入圖片長寬各縮小一半 (0.5x)，加速運算。
+    2. 載入範本時，也同步縮小一半，維持 1:1 的比對比例。
     """
     # 1. 讀取圖片
     file_bytes = np.asarray(bytearray(uploaded_image.read()), dtype=np.uint8)
     img_bgr = cv2.imdecode(file_bytes, 1)
-    
     if img_bgr is None: return [[], [], []]
 
-    # 2. 影像前處理
-    # 【修改】：不再縮放 (resize)，直接使用原圖尺寸
+    # 2. 影像前處理 (縮小 50%)
     h, w, _ = img_bgr.shape
+    new_w, new_h = w // 2, h // 2
+    img_resized = cv2.resize(img_bgr, (new_w, new_h))
     
-    # 為了效能，我們還是要限制搜尋區域 (ROI)
-    # 假設有利屬性都在畫面下半部 (55% ~ 98%)
-    start_y = int(h * 0.55)
-    end_y = int(h * 0.98)
-    img_roi = img_bgr[start_y:end_y, :]
+    # 取下半部 ROI (0.55 ~ 0.98)
+    start_y = int(new_h * 0.55)
+    end_y = int(new_h * 0.98)
+    img_roi = img_resized[start_y:end_y, :]
     
     roi_h, roi_w = img_roi.shape[:2]
     
-    # 3. 載入範本 (Templates)
+    # 3. 載入範本 (Templates) 並同步縮小
     template_groups = {}
     if os.path.exists(ICON_DIR):
         for filename in os.listdir(ICON_DIR):
             if filename.endswith(".png"):
+                # 檔名格式: "火_123456.png" -> 取 "火"
                 type_name = filename.split("_")[0]
                 icon_path = os.path.join(ICON_DIR, filename)
                 t_img = cv2.imread(icon_path)
                 if t_img is not None:
+                    # *** 關鍵修正：範本也要縮小 50% ***
+                    t_img_small = cv2.resize(t_img, (0, 0), fx=0.5, fy=0.5)
+                    
                     if type_name not in template_groups:
                         template_groups[type_name] = []
-                    template_groups[type_name].append(t_img)
+                    template_groups[type_name].append(t_img_small)
 
     if not template_groups:
         st.warning("⚠️ 尚未建立圖示範本！請先至「🛠️ 建立圖示範本」分頁建立範本。")
@@ -105,7 +110,7 @@ def detect_attribute_icons(uploaded_image):
     col_w = roi_w // 3
     
     # 進度條
-    progress_bar = st.progress(0, text="正在以原始解析度比對...")
+    progress_bar = st.progress(0, text="正在進行快速掃描 (0.5x)...")
     total_types = len(template_groups)
     current_step = 0
 
@@ -114,15 +119,13 @@ def detect_attribute_icons(uploaded_image):
         progress_bar.progress(int(current_step / total_types * 100), text=f"比對屬性: {type_name}")
 
         for templ in templ_list:
-            # 由於使用原圖，範本與目標大小應該幾乎是 1:1
-            # 這裡只做極小幅度的縮放 (0.9 ~ 1.1) 以應對拍攝距離微差
-            scales = np.linspace(0.9, 1.1, 3) 
+            # 即使縮小了，還是做一點點多尺度 (0.9 ~ 1.1) 以防微小的距離差異
+            scales = np.linspace(0.9, 1.1, 3)
             
             for scale in scales:
                 t_h, t_w = templ.shape[:2]
                 new_tw, new_th = int(t_w * scale), int(t_h * scale)
                 
-                # 防呆：如果範本比搜尋區域還大，跳過
                 if new_tw > roi_w or new_th > roi_h: continue
                 
                 resized_templ = cv2.resize(templ, (new_tw, new_th))
@@ -130,7 +133,7 @@ def detect_attribute_icons(uploaded_image):
                 # 使用 TM_CCOEFF_NORMED
                 res = cv2.matchTemplate(img_roi, resized_templ, cv2.TM_CCOEFF_NORMED)
                 
-                # 門檻設為 0.7 (原始解析度下，特徵豐富，分數通常較高)
+                # 門檻設為 0.7 (原始特徵保留得不錯，且無雜訊，分數應可維持)
                 loc = np.where(res >= 0.7)
                 
                 for pt in zip(*loc[::-1]):
@@ -237,10 +240,11 @@ def delete_card_callback():
         st.session_state['edit_select_index'] = 0
         fill_edit_fields()
 
-# --- Page: Template Creator (滑鼠框選版 - 原圖解析度) ---
+# --- Page: Template Creator (滑鼠框選版) ---
 def page_template_creator():
     st.header("🛠️ 建立圖示範本 (訓練模式)")
-    st.info("請上傳照片，用滑鼠框選圖示。注意：程式現在使用「原圖解析度」進行處理，請確保範本與對戰截圖的解析度相近。")
+    st.info("請上傳螢幕截圖，用滑鼠直接框選屬性圖示，然後儲存為範本。")
+    st.markdown("> **注意**：這裡建立的範本是高解析度的，程式在比對時會自動與縮小後的截圖同步處理。")
     
     uploaded_file = st.file_uploader("上傳含有屬性圖示的照片", type=["jpg", "png", "jpeg"], key="template_uploader")
     
@@ -289,7 +293,7 @@ def page_template_creator():
                     t = f.split("_")[0]
                     count_dict[t] = count_dict.get(t, 0) + 1
                 
-                st.write(f"總計 {len(img_files)} 個範本。建議刪除舊的低解析度範本，只保留現在建立的高解析度範本。")
+                st.write(f"總計 {len(img_files)} 個範本。")
                 
                 cols = st.columns(8)
                 for i, f in enumerate(img_files):
@@ -422,7 +426,7 @@ def get_effectiveness(atk, deff):
 
 def page_battle():
     st.header("⚔️ 對戰分析 (3 vs 3)")
-    st.info("上傳螢幕截圖，系統將比對您建立的圖示範本 (使用原圖解析度)。")
+    st.info("上傳螢幕截圖，系統將比對您建立的圖示範本 (使用0.5倍縮放加速)。")
     
     c_img, c_cfg = st.columns([1, 2])
     with c_img:
@@ -436,7 +440,7 @@ def page_battle():
                     st.session_state['battle_config'][i]['detected_weakness'] = detected[i]
                 
                 if not any(detected):
-                    st.warning("⚠️ 未偵測到圖示。請檢查是否已建立範本，或解析度是否一致。")
+                    st.warning("⚠️ 未偵測到圖示。請檢查是否已建立範本。")
                 else:
                     st.success("掃描完成！")
 
