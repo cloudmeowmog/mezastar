@@ -8,7 +8,7 @@ import os
 # --- 設定頁面 ---
 st.set_page_config(page_title="Mezastar 檔案室", layout="wide", page_icon="🗃️")
 
-# --- 設定資料與圖片路徑 ---
+# --- 設定資料庫檔案名稱 ---
 DB_FILE = "mezastar_db.json"
 IMG_DIR = "cardinfo"
 
@@ -158,6 +158,31 @@ def fill_edit_fields():
     st.session_state['edit_m2_type_input'] = m2['type']
     st.session_state['edit_m2_cat_input'] = m2.get('category', '攻擊')
 
+# --- 彈出視窗：顯示卡片圖片 (新增功能) ---
+@st.dialog("卡片影像預覽", width="large")
+def show_card_image_modal(card_name):
+    st.subheader(card_name)
+    
+    col_img, col_txt = st.columns([1, 0.1]) # 調整比例讓圖置中
+    
+    f_path = os.path.join(IMG_DIR, f"{card_name}_前.png")
+    b_path = os.path.join(IMG_DIR, f"{card_name}_後.png")
+    
+    with col_img:
+        st.markdown("**【正面】**")
+        if os.path.exists(f_path):
+            st.image(f_path, use_container_width=True)
+        else:
+            st.warning("無正面影像")
+            
+        st.markdown("---")
+        
+        st.markdown("**【背面】**")
+        if os.path.exists(b_path):
+            st.image(b_path, use_container_width=True)
+        else:
+            st.warning("無背面影像")
+
 # --- Callbacks: 資料庫管理 ---
 def save_new_card_callback():
     name = st.session_state['add_name_input']
@@ -184,16 +209,13 @@ def save_new_card_callback():
         ]
     }
     
-    # 儲存圖片到 cardinfo (新增功能)
     save_card_images(name)
-    
     st.session_state['inventory'].append(new_card)
     sort_inventory(st.session_state['inventory'])
     save_db(st.session_state['inventory'])
     
     st.session_state['msg_area'] = f"✅ 已新增並存檔：{name}"
     
-    # 清空欄位
     st.session_state['add_name_input'] = ""
     st.session_state['add_attack_input'] = 100
     st.session_state['add_sp_attack_input'] = 100
@@ -203,7 +225,6 @@ def save_new_card_callback():
     if 'last_processed_file' in st.session_state:
         del st.session_state['last_processed_file']
     st.session_state['uploader_key'] += 1
-    
     st.session_state['manage_sub_mode'] = "➕ 新增卡片"
 
 def update_card_callback():
@@ -233,7 +254,6 @@ def update_card_callback():
     save_db(st.session_state['inventory'])
     
     st.session_state['msg_area'] = f"✅ 已更新並存檔：{updated_card['name']}"
-    
     st.session_state['edit_select_index'] = 0
     fill_edit_fields()
 
@@ -244,10 +264,6 @@ def delete_card_callback():
         st.session_state['inventory'].pop(idx)
         save_db(st.session_state['inventory'])
         st.session_state['msg_area'] = f"🗑️ 已刪除並存檔：{removed_name}"
-        
-        # 選擇性功能：刪除資料時，是否要一併刪除圖片？
-        # 目前為求安全，保留圖片不刪除
-        
         st.session_state['edit_select_index'] = 0
         fill_edit_fields()
 
@@ -378,30 +394,22 @@ def page_manage_cards():
                 st.subheader("危險區域")
                 st.button("🗑️ 刪除此卡片", type="secondary", on_click=delete_card_callback)
                 
-                # --- 新增功能：顯示卡片圖片 ---
                 st.markdown("---")
-                st.markdown("###### 🖼️ 卡片影像確認")
-                
-                # 取得目前編輯的卡片名稱
+                st.markdown("###### 🖼️ 編輯中卡片影像")
                 current_card_name = st.session_state['edit_name_input']
-                # 如果名稱為空（可能剛刪除完），則不顯示
                 if current_card_name:
                     f_path = os.path.join(IMG_DIR, f"{current_card_name}_前.png")
                     b_path = os.path.join(IMG_DIR, f"{current_card_name}_後.png")
                     
                     if os.path.exists(f_path):
                         st.image(f_path, caption=f"{current_card_name}_正面", use_container_width=True)
-                    else:
-                        st.caption(f"⚠️ 無正面影像 ({f_path})")
-                        
                     if os.path.exists(b_path):
                         st.image(b_path, caption=f"{current_card_name}_背面", use_container_width=True)
-                    else:
-                        st.caption(f"⚠️ 無背面影像")
 
     if st.session_state['inventory']:
         st.markdown("---")
         with st.expander("檢視完整資料庫清單", expanded=True):
+            st.info("💡 提示：點選表格中的行，可檢視卡片正反面大圖。")
             sort_inventory(st.session_state['inventory'])
             display_data = []
             for item in st.session_state['inventory']:
@@ -419,7 +427,23 @@ def page_manage_cards():
             
             df = pd.DataFrame(display_data)
             df.index = range(1, len(df) + 1)
-            st.dataframe(df, use_container_width=True)
+            
+            # --- 關鍵修改：啟用選取功能 (on_select) ---
+            event = st.dataframe(
+                df, 
+                use_container_width=True, 
+                on_select="rerun", # 選取後重新執行以觸發視窗
+                selection_mode="single-row"
+            )
+            
+            # 檢查是否有選取，若有則彈出視窗
+            if len(event.selection.rows) > 0:
+                selected_idx = event.selection.rows[0]
+                # 從 DataFrame 拿到名稱 (因為 df 有重新排序過，需小心)
+                # event.selection.rows 回傳的是顯示順序的 index (0-based)
+                # 我們的 inventory 已經 sort 過，順序應與 df 一致
+                selected_card_name = st.session_state['inventory'][selected_idx]['name']
+                show_card_image_modal(selected_card_name)
             
             json_str = json.dumps(st.session_state['inventory'], ensure_ascii=False, indent=4)
             st.download_button("⬇️ 下載 JSON 備份檔", json_str, DB_FILE)
