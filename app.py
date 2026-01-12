@@ -4,7 +4,7 @@ import json
 import os
 import numpy as np
 import cv2 # 需安裝: pip install opencv-python-headless
-from PIL import Image
+from PIL import Image, ImageDraw
 
 # --- 設定頁面 ---
 st.set_page_config(page_title="Mezastar 檔案室", layout="wide", page_icon="🗃️")
@@ -46,9 +46,9 @@ def save_db(data):
     except Exception as e:
         st.error(f"寫入資料庫失敗: {e}")
 
-# --- Helper: 儲存圖片 ---
+# --- Helper: 儲存卡片圖片 ---
 def save_card_images(name):
-    current_key = st.session_state['uploader_key']
+    current_key = st.session_state.get('uploader_key', 0)
     front = st.session_state.get(f"u_front_{current_key}")
     back = st.session_state.get(f"u_back_{current_key}")
     
@@ -57,135 +57,84 @@ def save_card_images(name):
     if back:
         Image.open(back).save(os.path.join(IMG_DIR, f"{name}_後.png"), "PNG")
 
-# --- Helper: 精準圖示偵測 (NMS + Adaptive Threshold) ---
+# --- Helper: 核心辨識邏輯 (多重尺度模板匹配) ---
 def detect_attribute_icons(uploaded_image):
     """
-    1. 影像前處理 (自適應二值化 + 形態學)
-    2. 尋找方框輪廓 (嚴格篩選長寬比與面積)
-    3. 內容比對 (Template Matching)
-    4. ***關鍵***: 使用 NMS (非極大值抑制) 去除重疊誤判
+    使用使用者自行定義的「真實範本」進行比對。
+    因為範本來源也是螢幕截圖，所以比對成功率會非常高。
     """
     # 1. 讀取圖片
     file_bytes = np.asarray(bytearray(uploaded_image.read()), dtype=np.uint8)
     img_bgr = cv2.imdecode(file_bytes, 1)
-    
     if img_bgr is None: return [[], [], []]
 
-    # 2. 影像前處理
-    target_width = 1600 # 提高解析度以利小圖示辨識
+    # 2. 影像前處理 (縮放至寬度 1500，保持細節)
+    target_width = 1500
     h, w, _ = img_bgr.shape
-    scale = target_width / w
-    new_h = int(h * scale)
+    scale_factor = target_width / w
+    new_h = int(h * scale_factor)
     img_resized = cv2.resize(img_bgr, (target_width, new_h))
     
-    # 取下半部 ROI (0.55 ~ 0.95)
+    # 取下半部 ROI (0.55 ~ 0.98)
     start_y = int(new_h * 0.55)
-    end_y = int(new_h * 0.95)
-    img_roi = img_resized[start_y:end_y, :]
-    
-    # 轉灰階 & 自適應二值化
-    gray = cv2.cvtColor(img_roi, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                   cv2.THRESH_BINARY_INV, 15, 3)
-    
-    # 3. 尋找輪廓
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    img_roi = img_resized[start_y:, :]
     
     roi_h, roi_w = img_roi.shape[:2]
     
-    # 4. 準備範本
+    # 3. 載入範本 (Templates)
     templates = {}
-    STANDARD_SIZE = (64, 64)
     if os.path.exists(ICON_DIR):
         for filename in os.listdir(ICON_DIR):
             if filename.endswith(".png"):
-                type_name = filename.replace(".png", "")
-                path = os.path.join(ICON_DIR, filename)
-                t_img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+                # 檔名格式可能是 "火.png" 或 "火_1.png"
+                type_name = filename.split(".")[0].split("_")[0]
+                icon_path = os.path.join(ICON_DIR, filename)
+                t_img = cv2.imread(icon_path)
                 if t_img is not None:
-                    templates[type_name] = cv2.resize(t_img, STANDARD_SIZE)
+                    # 儲存範本 (保留彩色資訊，因為現在是真實截圖，顏色比對很準)
+                    templates[filename] = (type_name, t_img)
 
-    if not templates: return [[], [], []]
+    if not templates:
+        st.warning("⚠️ 尚未建立圖示範本！請先至「🛠️ 建立圖示範本」分頁，截取您的螢幕圖示。")
+        return [[], [], []]
 
-    # 儲存所有候選框 (x, y, w, h, score, label, col_idx)
-    candidates = []
+    # 4. 比對流程
+    detected_results = [set(), set(), set()]
     col_w = roi_w // 3
-
-    for cnt in contours:
-        area = cv2.contourArea(cnt)
-        if area < 1200 or area > 10000: continue # 調整面積範圍 (針對 1600px 寬度)
-            
-        x, y, w, h = cv2.boundingRect(cnt)
-        aspect_ratio = float(w) / h
+    
+    # 針對每一個範本進行掃描
+    for fname, (type_name, templ) in templates.items():
+        # 由於範本也是來自使用者的截圖，理論上大小應該差不多
+        # 但為了保險，我們還是做小範圍的縮放 (0.8 ~ 1.2)
+        scales = np.linspace(0.8, 1.2, 5)
         
-        # 嚴格篩選正方形 (0.8 ~ 1.25)
-        if 0.8 < aspect_ratio < 1.25:
-            # Crop & Resize
-            pad = 2
-            x1, y1 = max(0, x-pad), max(0, y-pad)
-            x2, y2 = min(roi_w, x+w+pad), min(roi_h, y+h+pad)
-            crop = img_roi[y1:y2, x1:x2]
-            if crop.size == 0: continue
+        for scale in scales:
+            t_h, t_w = templ.shape[:2]
+            new_tw, new_th = int(t_w * scale), int(t_h * scale)
             
-            crop_gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-            crop_resized = cv2.resize(crop_gray, STANDARD_SIZE)
+            if new_tw > roi_w or new_th > roi_h: continue
             
-            # Match
-            best_score = -1
-            best_label = None
+            resized_templ = cv2.resize(templ, (new_tw, new_th))
             
-            for t_name, t_img in templates.items():
-                res = cv2.matchTemplate(crop_resized, t_img, cv2.TM_CCOEFF_NORMED)
-                score = np.max(res)
-                if score > best_score:
-                    best_score = score
-                    best_label = t_name
+            # 使用 TM_CCOEFF_NORMED (標準化相關係數)
+            res = cv2.matchTemplate(img_roi, resized_templ, cv2.TM_CCOEFF_NORMED)
             
-            # *** 提高門檻至 0.65 ***
-            if best_score > 0.65:
-                # 判斷區域
-                cx = x + w // 2
+            # 設定門檻：因為是真實截圖對比，分數會很高，設 0.75 排除誤判
+            loc = np.where(res >= 0.75)
+            
+            for pt in zip(*loc[::-1]):
+                x, y = pt
+                # 判斷位置
+                center_x = x + new_tw // 2
                 c_idx = 0
-                if cx > col_w and cx < col_w*2: c_idx = 1
-                elif cx >= col_w*2: c_idx = 2
+                if center_x > col_w and center_x < col_w*2: c_idx = 1
+                elif center_x >= col_w*2: c_idx = 2
                 
-                # 加入候選名單 (不直接決定，交給 NMS 過濾)
-                candidates.append({
-                    'box': [x, y, w, h],
-                    'score': best_score,
-                    'label': best_label,
-                    'col': c_idx
-                })
+                detected_results[c_idx].add(type_name)
 
-    # 5. 非極大值抑制 (NMS) - 去除重疊框
-    # 簡單實作：若兩個框重疊度高，只留分數高的
-    final_results = [set(), set(), set()]
-    
-    # 依分數排序 (高到低)
-    candidates.sort(key=lambda k: k['score'], reverse=True)
-    
-    kept_boxes = []
-    for cand in candidates:
-        is_duplicate = False
-        x1, y1, w1, h1 = cand['box']
-        
-        for keep in kept_boxes:
-            # 檢查重疊 (IoU 簡化版: 檢查中心點距離)
-            kx, ky, kw, kh = keep['box']
-            dist = np.sqrt((x1-kx)**2 + (y1-ky)**2)
-            
-            # 如果距離太近 (< 寬度的一半)，視為同一個圖示的重複偵測
-            if dist < max(w1, kw) * 0.5:
-                is_duplicate = True
-                break
-        
-        if not is_duplicate:
-            kept_boxes.append(cand)
-            final_results[cand['col']].add(cand['label'])
-
+    # 歸位
     uploaded_image.seek(0)
-    return [list(s) for s in final_results]
+    return [list(s) for s in detected_results]
 
 # --- 初始化 Session State ---
 if 'inventory' not in st.session_state:
@@ -205,7 +154,9 @@ defaults = {
         {"name": "對手 1 (左)", "manual_t1": "無", "manual_t2": "無", "detected_weakness": []},
         {"name": "對手 2 (中)", "manual_t1": "無", "manual_t2": "無", "detected_weakness": []},
         {"name": "對手 3 (右)", "manual_t1": "無", "manual_t2": "無", "detected_weakness": []}
-    ]
+    ],
+    # 裁切工具用
+    "crop_scale": 1.0, "crop_x": 0, "crop_y": 0, "crop_w": 50, "crop_h": 50
 }
 for key, val in defaults.items():
     if key not in st.session_state:
@@ -278,6 +229,89 @@ def delete_card_callback():
         st.session_state['edit_select_index'] = 0
         fill_edit_fields()
 
+# --- Page: Template Creator (NEW!) ---
+def page_template_creator():
+    st.header("🛠️ 建立圖示範本 (訓練模式)")
+    st.info("此功能讓您從自己的照片中剪下圖示，大幅提升辨識準確度。")
+    
+    uploaded_file = st.file_uploader("上傳含有屬性圖示的照片", type=["jpg", "png", "jpeg"], key="template_uploader")
+    
+    if uploaded_file:
+        # 1. 顯示原始圖並縮放
+        file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+        img_bgr = cv2.imdecode(file_bytes, 1)
+        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        
+        # 為了操作方便，先縮放到固定寬度 1000
+        preview_width = 1000
+        h, w, _ = img_rgb.shape
+        scale = preview_width / w
+        new_h = int(h * scale)
+        img_display = cv2.resize(img_rgb, (preview_width, new_h))
+        
+        st.write("▼ 請調整下方滑桿，將紅色框框對準一個屬性圖示")
+        
+        # 2. 裁切控制項
+        col_c1, col_c2 = st.columns([2, 1])
+        with col_c1:
+            # 建立滑桿
+            crop_y = st.slider("垂直位置 (Y)", 0, new_h - 10, new_h // 2)
+            crop_x = st.slider("水平位置 (X)", 0, preview_width - 10, preview_width // 2)
+            crop_size = st.slider("框框大小", 20, 150, 60)
+            
+            # 在圖上畫紅框
+            img_with_box = img_display.copy()
+            cv2.rectangle(img_with_box, (crop_x, crop_y), (crop_x + crop_size, crop_y + crop_size), (255, 0, 0), 3)
+            st.image(img_with_box, use_container_width=True, caption="紅框預覽")
+
+        with col_c2:
+            # 3. 顯示裁切結果與儲存
+            st.markdown("#### 🎯 裁切預覽")
+            
+            # 從原圖中裁切 (需換算回原比例)
+            real_x = int(crop_x / scale)
+            real_y = int(crop_y / scale)
+            real_size = int(crop_size / scale)
+            
+            # 安全邊界檢查
+            real_x = max(0, min(real_x, w - 1))
+            real_y = max(0, min(real_y, h - 1))
+            real_size = min(real_size, w - real_x, h - real_y)
+            
+            if real_size > 0:
+                crop_img = img_rgb[real_y:real_y+real_size, real_x:real_x+real_size]
+                st.image(crop_img, width=100)
+                
+                # 儲存選項
+                icon_type = st.selectbox("這是什麼屬性？", POKEMON_TYPES, key="icon_type_selector")
+                
+                if st.button("💾 儲存為範本"):
+                    # 存檔 (BGR格式)
+                    save_name = f"{icon_type}_{int(pd.Timestamp.now().timestamp())}.png"
+                    save_path = os.path.join(ICON_DIR, save_name)
+                    # 轉回 BGR 存檔
+                    crop_bgr = cv2.cvtColor(crop_img, cv2.COLOR_RGB2BGR)
+                    cv2.imwrite(save_path, crop_bgr)
+                    st.success(f"已儲存範本：{save_name}")
+                    st.rerun() # 刷新以利存下一個
+
+    # 顯示目前已有的範本
+    st.markdown("---")
+    st.markdown("### 📚 目前的圖示範本庫")
+    if os.path.exists(ICON_DIR):
+        files = os.listdir(ICON_DIR)
+        if files:
+            cols = st.columns(8)
+            for i, f in enumerate(files):
+                if f.endswith(".png"):
+                    with cols[i % 8]:
+                        st.image(os.path.join(ICON_DIR, f), caption=f.split("_")[0])
+                        if st.button("X", key=f"del_{f}"):
+                            os.remove(os.path.join(ICON_DIR, f))
+                            st.rerun()
+        else:
+            st.info("目前沒有範本，請上方建立。")
+
 # --- Page: Manage Cards ---
 def page_manage_cards():
     st.header("🗃️ 卡片資料庫管理")
@@ -300,7 +334,6 @@ def page_manage_cards():
                     n = os.path.splitext(f.name)[0].replace("_前", "").replace("_front", "")
                     st.session_state['add_name_input'] = n
                     st.session_state['last_p'] = f.name
-                    # No st.rerun()
             if b: st.image(b, caption="背面預覽", use_container_width=True)
         with c2:
             with st.form("add"):
@@ -398,7 +431,7 @@ def get_effectiveness(atk, deff):
 
 def page_battle():
     st.header("⚔️ 對戰分析 (3 vs 3)")
-    st.info("上傳螢幕截圖，系統將使用「方框偵測」技術掃描「有利屬性」圖示。")
+    st.info("上傳螢幕截圖，系統將比對您建立的圖示範本。")
     
     c_img, c_cfg = st.columns([1, 2])
     with c_img:
@@ -412,7 +445,7 @@ def page_battle():
                     st.session_state['battle_config'][i]['detected_weakness'] = detected[i]
                 
                 if not any(detected):
-                    st.warning("⚠️ 未偵測到圖示。請檢查圖片清晰度或 att_icon 圖示是否正確。")
+                    st.warning("⚠️ 未偵測到圖示。請檢查是否已建立範本，或範本是否與此畫面相似。")
                 else:
                     st.success("掃描完成！")
 
@@ -430,7 +463,7 @@ def page_battle():
                         icon_html += f" ` {dt} ` "
                     st.markdown(icon_html)
                 else:
-                    st.caption("未偵測到圖示")
+                    st.caption("未偵測到")
 
                 cfg[i]['manual_t1'] = st.selectbox(f"屬性 1", POKEMON_TYPES, index=POKEMON_TYPES.index(cfg[i]['manual_t1']), key=f"op{i}t1")
                 cfg[i]['manual_t2'] = st.selectbox(f"屬性 2", POKEMON_TYPES, index=POKEMON_TYPES.index(cfg[i]['manual_t2']), key=f"op{i}t2")
@@ -505,6 +538,7 @@ def page_battle():
                 st.success(f"**第 {i+1} 棒**\n\n### {p['name']}\n* **模式**: {t_txt}\n* **建議**: {p['move']}\n* **預估火力**: {int(p['dmg'])}")
 
 # --- Main ---
-page = st.sidebar.radio("模式", ["卡片資料庫管理", "對戰分析"])
+page = st.sidebar.radio("模式", ["卡片資料庫管理", "對戰分析", "🛠️ 建立圖示範本"])
 if page == "卡片資料庫管理": page_manage_cards()
+elif page == "🛠️ 建立圖示範本": page_template_creator()
 else: page_battle()
