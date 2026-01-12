@@ -133,7 +133,7 @@ def detect_attribute_icons(uploaded_image):
                 # 使用 TM_CCOEFF_NORMED
                 res = cv2.matchTemplate(img_roi, resized_templ, cv2.TM_CCOEFF_NORMED)
                 
-                # 門檻設為 0.7 (原始特徵保留得不錯，且無雜訊，分數應可維持)
+                # 門檻設為 0.7
                 loc = np.where(res >= 0.7)
                 
                 for pt in zip(*loc[::-1]):
@@ -154,6 +154,8 @@ if 'inventory' not in st.session_state:
     st.session_state['inventory'] = load_db()
 if 'uploader_key' not in st.session_state:
     st.session_state['uploader_key'] = 0
+if 'last_battle_img' not in st.session_state:
+    st.session_state['last_battle_img'] = None
 
 defaults = {
     "add_name_input": "", "add_attack_input": 100, "add_sp_attack_input": 100, "add_tag_input": "無",
@@ -430,8 +432,17 @@ def page_battle():
     
     c_img, c_cfg = st.columns([1, 2])
     with c_img:
-        bf = st.file_uploader("對戰截圖", type=["jpg", "png"])
+        bf = st.file_uploader("對戰截圖", type=["jpg", "png"], key="battle_uploader")
         
+        # --- 自動清空邏輯 ---
+        current_file_name = bf.name if bf else ""
+        if current_file_name != st.session_state.get('last_battle_img', ""):
+            # 檔名改變，清空結果
+            for i in range(3):
+                st.session_state['battle_config'][i]['detected_weakness'] = []
+            st.session_state['last_battle_img'] = current_file_name
+        # ------------------
+
         if bf:
             st.image(bf, width=250)
             if st.button("📸 掃描有利屬性", type="primary"):
