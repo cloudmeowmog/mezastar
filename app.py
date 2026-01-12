@@ -2,9 +2,9 @@ import streamlit as st
 import pandas as pd
 import json
 import os
-import time
 import numpy as np
 import cv2 # 需安裝 opencv-python-headless
+from PIL import Image
 
 # --- 設定頁面 ---
 st.set_page_config(page_title="Mezastar 檔案室", layout="wide", page_icon="🗃️")
@@ -57,67 +57,130 @@ def save_card_images(name):
     if back:
         Image.open(back).save(os.path.join(IMG_DIR, f"{name}_後.png"), "PNG")
 
-# --- Helper: OpenCV 圖示比對 ---
+# --- Helper: OpenCV 圖示比對 (升級版：縮放 + 透明遮罩 + 多尺寸) ---
 def detect_attribute_icons(uploaded_image):
     """
-    將圖片切成左中右三份，分別比對 att_icon 資料夾內的圖示。
-    回傳: [[List of Types for Op1], [Op2], [Op3]]
+    1. 將圖片縮小至寬度 1000px 以提升速度。
+    2. 使用透明遮罩 (Alpha Mask) 進行比對。
+    3. 使用多重尺度 (Multi-scale) 解決拍照遠近造成的圖示大小不一問題。
     """
-    # 1. 讀取上傳圖片並轉為 OpenCV 格式
+    # 1. 讀取圖片
     file_bytes = np.asarray(bytearray(uploaded_image.read()), dtype=np.uint8)
-    img_bgr = cv2.imdecode(file_bytes, 1)
+    img_bgr = cv2.imdecode(file_bytes, 1) # 讀取為 BGR
     
     if img_bgr is None:
         return [[], [], []]
 
-    # 取得圖片尺寸
+    # 2. 影像前處理：縮放到固定寬度 (例如 1000px)，大幅提升速度
+    target_width = 1000
     h, w, _ = img_bgr.shape
+    scale_factor = target_width / w
+    new_h = int(h * scale_factor)
+    img_resized = cv2.resize(img_bgr, (target_width, new_h))
     
-    # 2. 切割成三等份 (左、中、右)
-    # 為了避免邊界切到圖示，可以稍微重疊或精準切割，這裡簡單切三份
-    col_w = w // 3
+    # 切割成左、中、右三份
+    col_w = target_width // 3
     rois = [
-        img_bgr[:, 0:col_w],       # 對手 1 (左)
-        img_bgr[:, col_w:col_w*2], # 對手 2 (中)
-        img_bgr[:, col_w*2:]       # 對手 3 (右)
+        img_resized[:, 0:col_w],       # 左
+        img_resized[:, col_w:col_w*2], # 中
+        img_resized[:, col_w*2:]       # 右
     ]
     
     detected_results = [[], [], []]
     
-    # 3. 讀取所有參考圖示
-    reference_icons = {}
+    # 3. 準備圖示模版
+    templates = {}
     for filename in os.listdir(ICON_DIR):
         if filename.endswith(".png"):
             type_name = filename.replace(".png", "")
             icon_path = os.path.join(ICON_DIR, filename)
-            ref_img = cv2.imread(icon_path)
-            if ref_img is not None:
-                reference_icons[type_name] = ref_img
+            # 讀取包含 Alpha 通道的圖片 (IMREAD_UNCHANGED)
+            templ_img = cv2.imread(icon_path, cv2.IMREAD_UNCHANGED)
+            
+            if templ_img is not None:
+                # 分離 BGR 與 Alpha 通道
+                if templ_img.shape[2] == 4:
+                    base = templ_img[:, :, 0:3]
+                    mask = templ_img[:, :, 3]
+                else:
+                    base = templ_img
+                    mask = None
+                templates[type_name] = (base, mask)
 
-    if not reference_icons:
+    if not templates:
         st.warning(f"⚠️ `{ICON_DIR}` 資料夾內沒有圖片，無法進行比對。")
+        uploaded_image.seek(0)
         return [[], [], []]
 
-    # 4. 進行比對 (Multi-scale Template Matching 較耗時，這裡用單純 Match)
-    # 建議：使用者需確保參考圖示的大小與螢幕截圖中的圖示大小相近
-    threshold = 0.8 # 相似度門檻，可調整
-    
+    # 4. 多重尺度比對
+    # 針對縮放後的畫面，圖示可能變大或變小，我們嘗試 0.5x ~ 1.5x 的縮放範圍
+    icon_scales = np.linspace(0.5, 1.5, 5) # 測試 5 種不同的大小
+    threshold = 0.85 # 信心門檻 (0.85 代表很高，因為有用遮罩，可以設高一點減少誤判)
+
+    # 顯示進度條 (因為多重尺度會跑比較久)
+    progress_bar = st.progress(0, text="AI 影像分析中...")
+    total_steps = len(rois) * len(templates)
+    step_count = 0
+
     for i, roi in enumerate(rois):
-        for type_name, template in reference_icons.items():
-            # 確保 template 比 roi 小
-            if template.shape[0] > roi.shape[0] or template.shape[1] > roi.shape[1]:
-                continue
-                
-            res = cv2.matchTemplate(roi, template, cv2.TM_CCOEFF_NORMED)
-            loc = np.where(res >= threshold)
+        found_types = set()
+        
+        for type_name, (base, mask) in templates.items():
             
-            # 如果有找到任何匹配點
-            if len(loc[0]) > 0:
-                detected_results[i].append(type_name)
+            # 更新進度
+            step_count += 1
+            progress_bar.progress(int(step_count / total_steps * 100), text=f"正在掃描: {type_name}...")
+
+            # 針對每一種尺度進行比對
+            for scale in icon_scales:
+                # 調整圖示大小
+                t_w = int(base.shape[1] * scale)
+                t_h = int(base.shape[0] * scale)
+                
+                # 如果縮放後的圖示比區域還大，就跳過
+                if t_w > roi.shape[1] or t_h > roi.shape[0]:
+                    continue
+                
+                resized_base = cv2.resize(base, (t_w, t_h))
+                resized_mask = None
+                if mask is not None:
+                    resized_mask = cv2.resize(mask, (t_w, t_h))
+
+                try:
+                    # 使用 TM_CCORR_NORMED 配合 Mask 是最準確的方法之一
+                    # 但若沒有 Mask，則使用 CCOEFF_NORMED
+                    if resized_mask is not None:
+                        res = cv2.matchTemplate(roi, resized_base, cv2.TM_CCORR_NORMED, mask=resized_mask)
+                        # Mask 模式下，閾值通常要設非常高 (0.95+) 或是看實際效果
+                        # 這裡為了相容性，我們改用 SQDIFF (值越小越好) 比較不會受亮度影響? 
+                        # 其實 CCORR_NORMED + Mask 是官方推薦。但 Streamlit 雲端版 OpenCV 有時版本較舊。
+                        # 安全起見，我們這裡還是用 CCOEFF_NORMED，但將透明區域填黑，減少干擾。
+                        
+                        # 替代方案：不傳入 mask 參數給 matchTemplate (避免舊版報錯)，
+                        # 而是用 mask 把圖示背景變黑，並假設截圖背景也是黑的(不太可能)。
+                        # 最好的方式：如果有 mask，就用 mask。
+                        
+                        # 若報錯，請改回不帶 mask 的 CCOEFF_NORMED
+                        res = cv2.matchTemplate(roi, resized_base, cv2.TM_CCORR_NORMED, mask=resized_mask)
+                        loc = np.where(res >= 0.92) # CCORR 需要極高閾值
+                    else:
+                        res = cv2.matchTemplate(roi, resized_base, cv2.TM_CCOEFF_NORMED)
+                        loc = np.where(res >= 0.8)
+
+                    if len(loc[0]) > 0:
+                        found_types.add(type_name)
+                        break # 這一種屬性找到了，就不需再試其他尺寸
+                except:
+                    # Fallback: 如果 OpenCV 版本不支援 mask，就用普通比對
+                    res = cv2.matchTemplate(roi, resized_base, cv2.TM_CCOEFF_NORMED)
+                    if np.max(res) > 0.8:
+                        found_types.add(type_name)
+                        break
+
+        detected_results[i] = list(found_types)
     
-    # 重新設定 pointer 讓 streamlit 可以顯示圖片
+    progress_bar.empty()
     uploaded_image.seek(0)
-    
     return detected_results
 
 # --- 初始化 Session State ---
@@ -134,7 +197,6 @@ defaults = {
     "edit_tag_input": "無", "edit_t1_input": "一般", "edit_t2_input": "無", "edit_m1_name_input": "",
     "edit_m1_type_input": "一般", "edit_m1_cat_input": "攻擊", "edit_m2_name_input": "",
     "edit_m2_type_input": "一般", "edit_m2_cat_input": "攻擊", "manage_sub_mode": "➕ 新增卡片",
-    # 對戰分析：儲存手動屬性與偵測到的弱點
     "battle_config": [
         {"name": "對手 1 (左)", "manual_t1": "無", "manual_t2": "無", "detected_weakness": []},
         {"name": "對手 2 (中)", "manual_t1": "無", "manual_t2": "無", "detected_weakness": []},
@@ -191,7 +253,6 @@ def common_save(is_new=False):
         save_card_images(card['name'])
         st.session_state['inventory'].append(card)
         msg = f"✅ 已新增並存檔：{card['name']}"
-        # Reset add fields
         st.session_state.update({k: v for k, v in defaults.items() if k.startswith("add_")})
         st.session_state['uploader_key'] += 1
     else:
@@ -341,7 +402,6 @@ def page_battle():
         if bf:
             st.image(bf, width=250)
             if st.button("📸 掃描有利屬性", type="primary"):
-                # 執行圖示比對
                 detected = detect_attribute_icons(bf) # [[types], [types], [types]]
                 for i in range(3):
                     st.session_state['battle_config'][i]['detected_weakness'] = detected[i]
@@ -353,25 +413,17 @@ def page_battle():
         for i, col in enumerate(cols):
             with col:
                 st.markdown(f"#### 🥊 {cfg[i]['name']}")
-                # 顯示偵測到的有利屬性
                 det_list = cfg[i]['detected_weakness']
                 if det_list:
-                    # 顯示圖示或文字
-                    st.markdown(f"**有利屬性 (偵測):**")
-                    # 嘗試顯示圖示，若無則顯示文字
+                    st.markdown(f"**有利屬性:**")
                     icon_html = ""
                     for dt in det_list:
-                        icon_p = os.path.join(ICON_DIR, f"{dt}.png")
-                        if os.path.exists(icon_p):
-                            # 讀取圖片轉 base64 以嵌入 markdown (略過複雜實作，改用 emoji 或文字)
-                            icon_html += f"`{dt}` "
-                        else:
-                            icon_html += f"`{dt}` "
+                        # 簡單用文字顯示，若要圖片可改用 st.image
+                        icon_html += f" ` {dt} ` "
                     st.markdown(icon_html)
                 else:
                     st.caption("未偵測到圖示")
 
-                # 手動屬性設定
                 cfg[i]['manual_t1'] = st.selectbox(f"屬性 1", POKEMON_TYPES, index=POKEMON_TYPES.index(cfg[i]['manual_t1']), key=f"op{i}t1")
                 cfg[i]['manual_t2'] = st.selectbox(f"屬性 2", POKEMON_TYPES, index=POKEMON_TYPES.index(cfg[i]['manual_t2']), key=f"op{i}t2")
 
@@ -390,18 +442,10 @@ def page_battle():
             for idx, m in enumerate(card['moves']):
                 if not m['name']: continue
                 eff_total = 0
-                
-                # 計算對三個對手的效益
                 for i in range(3):
-                    # 1. 基礎屬性剋制 (針對手動設定的屬性)
                     eff = get_effectiveness(m['type'], cfg[i]['manual_t1']) * get_effectiveness(m['type'], cfg[i]['manual_t2'])
-                    
-                    # 2. 有利屬性加成 (針對偵測到的圖示)
-                    # 如果招式屬性 在 對手的有利屬性列表中 -> 強制給予高倍率 (例如 2.5)
-                    # 我們取兩者較大者，或者疊加。Mezastar 邏輯通常是有利屬性即為剋制。
                     if m['type'] in cfg[i]['detected_weakness']:
-                        eff = max(eff, 2.5) # 確保至少有 2.5 倍
-                    
+                        eff = max(eff, 2.5)
                     eff_total += eff
                 
                 base = atk_v if m.get('category') == '攻擊' else sp_atk_v
@@ -418,9 +462,9 @@ def page_battle():
             
             cands.append({"name": card['name'], "mode": "special", "tag": tag, "move": best_move_s, "score": score_s, "dmg": max_dmg_s})
 
-            # Mode B: Normal (若有 Tag)
+            # Mode B: Normal
             if tag != "無":
-                m = card['moves'][0] # 強制第一招
+                m = card['moves'][0] # Force 1st move
                 if m['name']:
                     eff_total = 0
                     for i in range(3):
