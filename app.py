@@ -3,8 +3,9 @@ import pandas as pd
 import json
 import os
 import numpy as np
-import cv2 # 需安裝: pip install opencv-python-headless
-from PIL import Image, ImageDraw
+import cv2 # pip install opencv-python-headless
+from PIL import Image
+from streamlit_cropper import st_cropper # 必須安裝: pip install streamlit-cropper
 
 # --- 設定頁面 ---
 st.set_page_config(page_title="Mezastar 檔案室", layout="wide", page_icon="🗃️")
@@ -61,14 +62,13 @@ def save_card_images(name):
 def detect_attribute_icons(uploaded_image):
     """
     使用使用者自行定義的「真實範本」進行比對。
-    因為範本來源也是螢幕截圖，所以比對成功率會非常高。
     """
     # 1. 讀取圖片
     file_bytes = np.asarray(bytearray(uploaded_image.read()), dtype=np.uint8)
     img_bgr = cv2.imdecode(file_bytes, 1)
     if img_bgr is None: return [[], [], []]
 
-    # 2. 影像前處理 (縮放至寬度 1500，保持細節)
+    # 2. 影像前處理 (縮放至寬度 1500)
     target_width = 1500
     h, w, _ = img_bgr.shape
     scale_factor = target_width / w
@@ -86,26 +86,22 @@ def detect_attribute_icons(uploaded_image):
     if os.path.exists(ICON_DIR):
         for filename in os.listdir(ICON_DIR):
             if filename.endswith(".png"):
-                # 檔名格式可能是 "火.png" 或 "火_1.png"
                 type_name = filename.split(".")[0].split("_")[0]
                 icon_path = os.path.join(ICON_DIR, filename)
                 t_img = cv2.imread(icon_path)
                 if t_img is not None:
-                    # 儲存範本 (保留彩色資訊，因為現在是真實截圖，顏色比對很準)
                     templates[filename] = (type_name, t_img)
 
     if not templates:
-        st.warning("⚠️ 尚未建立圖示範本！請先至「🛠️ 建立圖示範本」分頁，截取您的螢幕圖示。")
+        st.warning("⚠️ 尚未建立圖示範本！請先至「🛠️ 建立圖示範本」分頁。")
         return [[], [], []]
 
     # 4. 比對流程
     detected_results = [set(), set(), set()]
     col_w = roi_w // 3
     
-    # 針對每一個範本進行掃描
     for fname, (type_name, templ) in templates.items():
-        # 由於範本也是來自使用者的截圖，理論上大小應該差不多
-        # 但為了保險，我們還是做小範圍的縮放 (0.8 ~ 1.2)
+        # 微幅縮放 (0.8 ~ 1.2) 適應不同拍攝距離
         scales = np.linspace(0.8, 1.2, 5)
         
         for scale in scales:
@@ -116,15 +112,14 @@ def detect_attribute_icons(uploaded_image):
             
             resized_templ = cv2.resize(templ, (new_tw, new_th))
             
-            # 使用 TM_CCOEFF_NORMED (標準化相關係數)
+            # 使用 TM_CCOEFF_NORMED
             res = cv2.matchTemplate(img_roi, resized_templ, cv2.TM_CCOEFF_NORMED)
             
-            # 設定門檻：因為是真實截圖對比，分數會很高，設 0.75 排除誤判
-            loc = np.where(res >= 0.75)
+            # 門檻設為 0.7 (因為是真實截圖對比，吻合度會很高)
+            loc = np.where(res >= 0.7)
             
             for pt in zip(*loc[::-1]):
                 x, y = pt
-                # 判斷位置
                 center_x = x + new_tw // 2
                 c_idx = 0
                 if center_x > col_w and center_x < col_w*2: c_idx = 1
@@ -132,7 +127,6 @@ def detect_attribute_icons(uploaded_image):
                 
                 detected_results[c_idx].add(type_name)
 
-    # 歸位
     uploaded_image.seek(0)
     return [list(s) for s in detected_results]
 
@@ -154,9 +148,7 @@ defaults = {
         {"name": "對手 1 (左)", "manual_t1": "無", "manual_t2": "無", "detected_weakness": []},
         {"name": "對手 2 (中)", "manual_t1": "無", "manual_t2": "無", "detected_weakness": []},
         {"name": "對手 3 (右)", "manual_t1": "無", "manual_t2": "無", "detected_weakness": []}
-    ],
-    # 裁切工具用
-    "crop_scale": 1.0, "crop_x": 0, "crop_y": 0, "crop_w": 50, "crop_h": 50
+    ]
 }
 for key, val in defaults.items():
     if key not in st.session_state:
@@ -229,88 +221,68 @@ def delete_card_callback():
         st.session_state['edit_select_index'] = 0
         fill_edit_fields()
 
-# --- Page: Template Creator (NEW!) ---
+# --- Page: Template Creator (滑鼠框選版) ---
 def page_template_creator():
     st.header("🛠️ 建立圖示範本 (訓練模式)")
-    st.info("此功能讓您從自己的照片中剪下圖示，大幅提升辨識準確度。")
+    st.info("請上傳螢幕截圖，用滑鼠直接框選屬性圖示，然後儲存為範本。")
     
     uploaded_file = st.file_uploader("上傳含有屬性圖示的照片", type=["jpg", "png", "jpeg"], key="template_uploader")
     
     if uploaded_file:
-        # 1. 顯示原始圖並縮放
-        file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-        img_bgr = cv2.imdecode(file_bytes, 1)
-        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        img = Image.open(uploaded_file)
         
-        # 為了操作方便，先縮放到固定寬度 1000
-        preview_width = 1000
-        h, w, _ = img_rgb.shape
-        scale = preview_width / w
-        new_h = int(h * scale)
-        img_display = cv2.resize(img_rgb, (preview_width, new_h))
+        # 使用 streamlit-cropper 進行滑鼠框選
+        st.markdown("👇 **直接在下方圖片上用滑鼠拖曳框選一個圖示：**")
         
-        st.write("▼ 請調整下方滑桿，將紅色框框對準一個屬性圖示")
+        # box_color: 框框顏色, aspect_ratio: 設為 None 自由調整, 或 (1,1) 固定正方形
+        cropped_img = st_cropper(img, realtime_update=True, box_color='#FF0000', aspect_ratio=None, key="cropper")
         
-        # 2. 裁切控制項
-        col_c1, col_c2 = st.columns([2, 1])
-        with col_c1:
-            # 建立滑桿
-            crop_y = st.slider("垂直位置 (Y)", 0, new_h - 10, new_h // 2)
-            crop_x = st.slider("水平位置 (X)", 0, preview_width - 10, preview_width // 2)
-            crop_size = st.slider("框框大小", 20, 150, 60)
+        st.markdown("---")
+        col_preview, col_save = st.columns([1, 2])
+        
+        with col_preview:
+            st.image(cropped_img, caption="裁切預覽", width=100)
             
-            # 在圖上畫紅框
-            img_with_box = img_display.copy()
-            cv2.rectangle(img_with_box, (crop_x, crop_y), (crop_x + crop_size, crop_y + crop_size), (255, 0, 0), 3)
-            st.image(img_with_box, use_container_width=True, caption="紅框預覽")
-
-        with col_c2:
-            # 3. 顯示裁切結果與儲存
-            st.markdown("#### 🎯 裁切預覽")
+        with col_save:
+            icon_type = st.selectbox("這是什麼屬性？", POKEMON_TYPES, key="icon_type_selector")
             
-            # 從原圖中裁切 (需換算回原比例)
-            real_x = int(crop_x / scale)
-            real_y = int(crop_y / scale)
-            real_size = int(crop_size / scale)
-            
-            # 安全邊界檢查
-            real_x = max(0, min(real_x, w - 1))
-            real_y = max(0, min(real_y, h - 1))
-            real_size = min(real_size, w - real_x, h - real_y)
-            
-            if real_size > 0:
-                crop_img = img_rgb[real_y:real_y+real_size, real_x:real_x+real_size]
-                st.image(crop_img, width=100)
-                
-                # 儲存選項
-                icon_type = st.selectbox("這是什麼屬性？", POKEMON_TYPES, key="icon_type_selector")
-                
-                if st.button("💾 儲存為範本"):
-                    # 存檔 (BGR格式)
-                    save_name = f"{icon_type}_{int(pd.Timestamp.now().timestamp())}.png"
+            if st.button("💾 儲存此範本"):
+                if cropped_img:
+                    # 檔名加入時間戳記，避免同屬性覆蓋
+                    timestamp = int(pd.Timestamp.now().timestamp())
+                    save_name = f"{icon_type}_{timestamp}.png"
                     save_path = os.path.join(ICON_DIR, save_name)
-                    # 轉回 BGR 存檔
-                    crop_bgr = cv2.cvtColor(crop_img, cv2.COLOR_RGB2BGR)
-                    cv2.imwrite(save_path, crop_bgr)
-                    st.success(f"已儲存範本：{save_name}")
-                    st.rerun() # 刷新以利存下一個
+                    
+                    # PIL 轉 CV2 (RGB -> BGR)
+                    img_array = np.array(cropped_img)
+                    img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+                    
+                    cv2.imwrite(save_path, img_bgr)
+                    st.success(f"✅ 已儲存範本：{save_name}")
+                    # 不使用 st.rerun()，讓使用者可以繼續裁切同一張圖的其他圖示
+                else:
+                    st.error("裁切無效")
 
-    # 顯示目前已有的範本
+    # 管理現有範本
     st.markdown("---")
     st.markdown("### 📚 目前的圖示範本庫")
     if os.path.exists(ICON_DIR):
         files = os.listdir(ICON_DIR)
         if files:
-            cols = st.columns(8)
-            for i, f in enumerate(files):
-                if f.endswith(".png"):
+            # 簡單過濾非圖片
+            img_files = [f for f in files if f.endswith(".png")]
+            if img_files:
+                cols = st.columns(8)
+                for i, f in enumerate(img_files):
                     with cols[i % 8]:
                         st.image(os.path.join(ICON_DIR, f), caption=f.split("_")[0])
-                        if st.button("X", key=f"del_{f}"):
+                        if st.button("🗑️", key=f"del_{f}"):
                             os.remove(os.path.join(ICON_DIR, f))
-                            st.rerun()
+                            st.rerun() # 刪除後需要刷新
+            else:
+                st.info("資料夾內無 PNG 圖片。")
         else:
-            st.info("目前沒有範本，請上方建立。")
+            st.info("目前沒有範本。")
 
 # --- Page: Manage Cards ---
 def page_manage_cards():
@@ -445,7 +417,7 @@ def page_battle():
                     st.session_state['battle_config'][i]['detected_weakness'] = detected[i]
                 
                 if not any(detected):
-                    st.warning("⚠️ 未偵測到圖示。請檢查是否已建立範本，或範本是否與此畫面相似。")
+                    st.warning("⚠️ 未偵測到圖示。請檢查是否已建立範本。")
                 else:
                     st.success("掃描完成！")
 
