@@ -91,12 +91,13 @@ def detect_attribute_icons(uploaded_image, show_debug=False):
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     
     # 自適應二值化 (Adaptive Thresholding) - 對抗螢幕反光最有效
+    # 參數 19, 5 是經驗值，若雜訊太多可調大 blockSize (19->25) 或 C (5->10)
     thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                   cv2.THRESH_BINARY_INV, 19, 3)
+                                   cv2.THRESH_BINARY_INV, 19, 5)
     
     # 形態學閉運算 (連接斷掉的邊線)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=1)
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
 
     # 3. 尋找輪廓
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -115,9 +116,6 @@ def detect_attribute_icons(uploaded_image, show_debug=False):
                 icon_path = os.path.join(ICON_DIR, filename)
                 t_img = cv2.imread(icon_path)
                 if t_img is not None:
-                    # 這裡可以保留彩色比對，也可以轉灰階。
-                    # 考慮到有些屬性形狀像但顏色不同，我們保留彩色比對比較準確，
-                    # 但因為截圖有色偏，這裡我們先嘗試「轉灰階」比對紋理，若效果不好再改回彩色。
                     # 為了抗色偏，灰階比對紋路通常較穩。
                     t_gray = cv2.cvtColor(t_img, cv2.COLOR_BGR2GRAY)
                     t_resized = cv2.resize(t_gray, STANDARD_SIZE)
@@ -135,10 +133,11 @@ def detect_attribute_icons(uploaded_image, show_debug=False):
         area = cv2.contourArea(cnt)
         
         # 初步過濾：面積 (在1200px寬的圖中，圖示大約是 800~6000)
+        # 如果一直抓不到，可以把範圍放寬 (e.g., 500 ~ 8000)
         if area < 800 or area > 8000:
             continue
             
-        # 形狀過濾：近似多邊形 (尋找四邊形)
+        # 形狀過濾：近似多邊形
         peri = cv2.arcLength(cnt, True)
         approx = cv2.approxPolyDP(cnt, 0.04 * peri, True)
         
@@ -147,7 +146,7 @@ def detect_attribute_icons(uploaded_image, show_debug=False):
         aspect_ratio = float(w) / h
         
         # 條件：
-        # 1. 有 4 個頂點 (或是接近 4 個，有時圓角會變多) -> 放寬條件，只要長寬比對就好
+        # 1. 頂點數接近 4 (考慮到圓角或雜訊，4~6 都可以接受，甚至不檢查頂點只檢查長寬比)
         # 2. 長寬比接近 1 (0.7 ~ 1.4)
         if 0.7 < aspect_ratio < 1.4:
             
@@ -159,7 +158,8 @@ def detect_attribute_icons(uploaded_image, show_debug=False):
             
             if crop.size == 0: continue
             
-            # 轉灰階並縮放至標準大小
+            # *** 核心：歸一化 ***
+            # 將裁切下來的「可能是圖示的東西」縮放到跟範本一樣大
             crop_gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
             crop_resized = cv2.resize(crop_gray, STANDARD_SIZE)
             
@@ -175,10 +175,9 @@ def detect_attribute_icons(uploaded_image, show_debug=False):
                     best_score = score
                     best_label = t_name
             
-            # 判斷門檻 (因為形狀已經篩選過，比對的是內容，分數通常較高)
-            # 0.55 是個不錯的起點
+            # 設定門檻值 (0.55 左右通常是安全值)
             if best_score > 0.55:
-                # 判斷在哪個對手的區域
+                # 判斷位置 (左/中/右)
                 center_x = x + w // 2
                 c_idx = 0
                 if center_x > col_w and center_x < col_w*2:
@@ -189,13 +188,13 @@ def detect_attribute_icons(uploaded_image, show_debug=False):
                 detected_results[c_idx].add(best_label)
                 
                 # 畫圖 (綠框代表抓到)
-                cv2.rectangle(img_debug, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                cv2.rectangle(img_debug, (x, y), (x+w, y+h), (0, 255, 0), 3)
                 cv2.putText(img_debug, f"{best_label}", (x, y-5), 
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
             else:
-                # 畫圖 (紅框代表形狀像方框，但內容對不上)
+                # 畫圖 (紅框代表形狀像方框，但內容對不上，方便除錯)
                 if show_debug:
-                    cv2.rectangle(img_debug, (x, y), (x+w, y+h), (0, 0, 255), 1)
+                    cv2.rectangle(img_debug, (x, y), (x+w, y+h), (0, 0, 255), 2)
 
     if show_debug:
         st.write("🔍 [除錯] 偵測結果 (綠框=成功, 紅框=形狀吻合但內容不符):")
