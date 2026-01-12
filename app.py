@@ -4,6 +4,7 @@ import google.generativeai as genai
 from PIL import Image
 import json
 import os
+import time
 
 # --- 設定頁面 ---
 st.set_page_config(page_title="Mezastar 檔案室", layout="wide", page_icon="🗃️")
@@ -49,7 +50,6 @@ def save_card_images(name):
     """從 Session State 的上傳元件中讀取圖片並存檔"""
     current_key = st.session_state['uploader_key']
     
-    # 取得正面圖片物件
     front_file = st.session_state.get(f"u_front_{current_key}")
     if front_file:
         try:
@@ -59,7 +59,6 @@ def save_card_images(name):
         except Exception as e:
             st.error(f"正面圖片存檔失敗: {e}")
 
-    # 取得背面圖片物件
     back_file = st.session_state.get(f"u_back_{current_key}")
     if back_file:
         try:
@@ -114,7 +113,13 @@ defaults = {
     "edit_m2_name_input": "",
     "edit_m2_type_input": "一般",
     "edit_m2_cat_input": "攻擊",
-    "manage_sub_mode": "➕ 新增卡片" 
+    "manage_sub_mode": "➕ 新增卡片",
+    # 對戰分析用的 opponents 狀態
+    "battle_opponents": [
+        {"name": "對手1", "t1": "一般", "t2": "無"},
+        {"name": "對手2", "t1": "一般", "t2": "無"},
+        {"name": "對手3", "t1": "一般", "t2": "無"}
+    ]
 }
 for key, val in defaults.items():
     if key not in st.session_state:
@@ -132,62 +137,51 @@ SPECIAL_TAGS = [
 
 MOVE_CATEGORIES = ["攻擊", "特攻"]
 
-# --- 同步編輯欄位的 Helper Function ---
-def fill_edit_fields():
-    if not st.session_state['inventory']: return
-    
-    idx = st.session_state.get('edit_select_index', 0)
-    if idx >= len(st.session_state['inventory']): idx = 0
-    
-    c = st.session_state['inventory'][idx]
-    
-    st.session_state['edit_name_input'] = c['name']
-    st.session_state['edit_attack_input'] = c.get('attack', 100)
-    st.session_state['edit_sp_attack_input'] = c.get('sp_attack', 100)
-    st.session_state['edit_tag_input'] = c['tag']
-    st.session_state['edit_t1_input'] = c['type']
-    st.session_state['edit_t2_input'] = c.get('type2', '無')
-    
-    m1 = c['moves'][0]
-    st.session_state['edit_m1_name_input'] = m1['name']
-    st.session_state['edit_m1_type_input'] = m1['type']
-    st.session_state['edit_m1_cat_input'] = m1.get('category', '攻擊')
-    
-    m2 = c['moves'][1]
-    st.session_state['edit_m2_name_input'] = m2['name']
-    st.session_state['edit_m2_type_input'] = m2['type']
-    st.session_state['edit_m2_cat_input'] = m2.get('category', '攻擊')
-
-# --- 彈出視窗：顯示卡片圖片 ---
+# --- Helper: 彈出視窗顯示圖片 ---
 @st.dialog("卡片影像預覽", width="large")
 def show_card_image_modal(card_name):
     st.subheader(card_name)
-    
     col_img, col_txt = st.columns([1, 0.1])
-    
     f_path = os.path.join(IMG_DIR, f"{card_name}_前.png")
     b_path = os.path.join(IMG_DIR, f"{card_name}_後.png")
-    
     with col_img:
         st.markdown("**【正面】**")
         if os.path.exists(f_path):
             st.image(f_path, use_container_width=True)
         else:
             st.warning("無正面影像")
-            
         st.markdown("---")
-        
         st.markdown("**【背面】**")
         if os.path.exists(b_path):
             st.image(b_path, use_container_width=True)
         else:
             st.warning("無背面影像")
 
+# --- 同步編輯欄位 ---
+def fill_edit_fields():
+    if not st.session_state['inventory']: return
+    idx = st.session_state.get('edit_select_index', 0)
+    if idx >= len(st.session_state['inventory']): idx = 0
+    c = st.session_state['inventory'][idx]
+    st.session_state['edit_name_input'] = c['name']
+    st.session_state['edit_attack_input'] = c.get('attack', 100)
+    st.session_state['edit_sp_attack_input'] = c.get('sp_attack', 100)
+    st.session_state['edit_tag_input'] = c['tag']
+    st.session_state['edit_t1_input'] = c['type']
+    st.session_state['edit_t2_input'] = c.get('type2', '無')
+    m1 = c['moves'][0]
+    st.session_state['edit_m1_name_input'] = m1['name']
+    st.session_state['edit_m1_type_input'] = m1['type']
+    st.session_state['edit_m1_cat_input'] = m1.get('category', '攻擊')
+    m2 = c['moves'][1]
+    st.session_state['edit_m2_name_input'] = m2['name']
+    st.session_state['edit_m2_type_input'] = m2['type']
+    st.session_state['edit_m2_cat_input'] = m2.get('category', '攻擊')
+
 # --- Callbacks: 資料庫管理 ---
 def save_new_card_callback():
     name = st.session_state['add_name_input']
     if not name: name = "未命名"
-    
     new_card = {
         "name": name,
         "attack": st.session_state['add_attack_input'],
@@ -196,32 +190,20 @@ def save_new_card_callback():
         "type": st.session_state['add_t1_input'],
         "type2": st.session_state['add_t2_input'],
         "moves": [
-            {
-                "name": st.session_state['add_m1_name_input'], 
-                "type": st.session_state['add_m1_type_input'],
-                "category": st.session_state['add_m1_cat_input']
-            },
-            {
-                "name": st.session_state['add_m2_name_input'], 
-                "type": st.session_state['add_m2_type_input'],
-                "category": st.session_state['add_m2_cat_input']
-            }
+            {"name": st.session_state['add_m1_name_input'], "type": st.session_state['add_m1_type_input'], "category": st.session_state['add_m1_cat_input']},
+            {"name": st.session_state['add_m2_name_input'], "type": st.session_state['add_m2_type_input'], "category": st.session_state['add_m2_cat_input']}
         ]
     }
-    
     save_card_images(name)
     st.session_state['inventory'].append(new_card)
     sort_inventory(st.session_state['inventory'])
     save_db(st.session_state['inventory'])
-    
     st.session_state['msg_area'] = f"✅ 已新增並存檔：{name}"
-    
     st.session_state['add_name_input'] = ""
     st.session_state['add_attack_input'] = 100
     st.session_state['add_sp_attack_input'] = 100
     st.session_state['add_m1_name_input'] = ""
     st.session_state['add_m2_name_input'] = ""
-    
     if 'last_processed_file' in st.session_state:
         del st.session_state['last_processed_file']
     st.session_state['uploader_key'] += 1
@@ -237,22 +219,13 @@ def update_card_callback():
         "type": st.session_state['edit_t1_input'],
         "type2": st.session_state['edit_t2_input'],
         "moves": [
-            {
-                "name": st.session_state['edit_m1_name_input'], 
-                "type": st.session_state['edit_m1_type_input'],
-                "category": st.session_state['edit_m1_cat_input']
-            },
-            {
-                "name": st.session_state['edit_m2_name_input'], 
-                "type": st.session_state['edit_m2_type_input'],
-                "category": st.session_state['edit_m2_cat_input']
-            }
+            {"name": st.session_state['edit_m1_name_input'], "type": st.session_state['edit_m1_type_input'], "category": st.session_state['edit_m1_cat_input']},
+            {"name": st.session_state['edit_m2_name_input'], "type": st.session_state['edit_m2_type_input'], "category": st.session_state['edit_m2_cat_input']}
         ]
     }
     st.session_state['inventory'][idx] = updated_card
     sort_inventory(st.session_state['inventory'])
     save_db(st.session_state['inventory'])
-    
     st.session_state['msg_area'] = f"✅ 已更新並存檔：{updated_card['name']}"
     st.session_state['edit_select_index'] = 0
     fill_edit_fields()
@@ -270,7 +243,6 @@ def delete_card_callback():
 # --- 功能 1: 卡片資料庫管理 ---
 def page_manage_cards():
     st.header("🗃️ 卡片資料庫管理")
-    
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 💾 資料庫狀態")
     if st.sidebar.button("手動強制存檔", type="secondary"):
@@ -280,13 +252,7 @@ def page_manage_cards():
         st.success(st.session_state['msg_area'])
         st.session_state['msg_area'] = "" 
 
-    sub_mode = st.radio(
-        "功能切換", 
-        ["➕ 新增卡片", "✏️ 編輯與刪除"], 
-        horizontal=True,
-        key="manage_sub_mode"
-    )
-
+    sub_mode = st.radio("功能切換", ["➕ 新增卡片", "✏️ 編輯與刪除"], horizontal=True, key="manage_sub_mode")
     st.markdown("---")
 
     if sub_mode == "➕ 新增卡片":
@@ -296,7 +262,6 @@ def page_manage_cards():
             current_key = st.session_state['uploader_key']
             front_file = st.file_uploader("上傳【正面】(自動帶入檔名)", type=["jpg", "png", "jpeg"], key=f"u_front_{current_key}")
             back_file = st.file_uploader("上傳【背面】", type=["jpg", "png", "jpeg"], key=f"u_back_{current_key}")
-            
             if front_file:
                 st.image(Image.open(front_file), caption="正面預覽", use_container_width=True)
                 if 'last_processed_file' not in st.session_state or st.session_state['last_processed_file'] != front_file.name:
@@ -315,30 +280,23 @@ def page_manage_cards():
             st.subheader("填寫資料")
             with st.form("add_form"):
                 st.text_input("卡片名稱", key="add_name_input")
-                
                 c_stat1, c_stat2 = st.columns(2)
                 c_stat1.number_input("⚔️ 攻擊數值", min_value=0, step=1, key="add_attack_input")
                 c_stat2.number_input("✨ 特攻數值", min_value=0, step=1, key="add_sp_attack_input")
-                
                 st.selectbox("特殊能力", SPECIAL_TAGS, key="add_tag_input")
-                
                 c1, c2 = st.columns(2)
                 c1.selectbox("屬性 1", POKEMON_TYPES, key="add_t1_input")
                 c2.selectbox("屬性 2", POKEMON_TYPES, index=len(POKEMON_TYPES)-1, key="add_t2_input")
-                
                 st.markdown("**招式資訊**")
-                
                 st.markdown("---")
                 mc1_a, mc1_b, mc1_c = st.columns([2, 1, 1])
                 mc1_a.text_input("一般招式", placeholder="例如：影子球", key="add_m1_name_input")
                 mc1_b.selectbox("屬性", POKEMON_TYPES, key="add_m1_type_input")
                 mc1_c.selectbox("分類", MOVE_CATEGORIES, key="add_m1_cat_input")
-                
                 mc2_a, mc2_b, mc2_c = st.columns([2, 1, 1])
                 mc2_a.text_input("強力招式", placeholder="例如：極巨幽魂", key="add_m2_name_input")
                 mc2_b.selectbox("屬性", POKEMON_TYPES, key="add_m2_type_input")
                 mc2_c.selectbox("分類", MOVE_CATEGORIES, key="add_m2_cat_input")
-                
                 st.form_submit_button("💾 新增至資料庫", type="primary", on_click=save_new_card_callback)
 
     elif sub_mode == "✏️ 編輯與刪除":
@@ -348,59 +306,41 @@ def page_manage_cards():
             st.subheader("🔍 選擇要管理的卡片")
             sort_inventory(st.session_state['inventory'])
             card_options = [f"{i+1}. {c['name']} ({c['tag']})" for i, c in enumerate(st.session_state['inventory'])]
-            
-            selected_idx = st.selectbox(
-                "請選擇卡片 (已依名稱排序)", 
-                range(len(st.session_state['inventory'])), 
-                format_func=lambda x: card_options[x], 
-                key="edit_select_index",
-                on_change=fill_edit_fields
-            )
-            
+            selected_idx = st.selectbox("請選擇卡片 (已依名稱排序)", range(len(st.session_state['inventory'])), format_func=lambda x: card_options[x], key="edit_select_index", on_change=fill_edit_fields)
             if st.session_state['edit_name_input'] == "" and st.session_state['inventory']:
                  fill_edit_fields()
-
             st.markdown("---")
             col_form, col_action = st.columns([3, 1])
             with col_form:
                 st.subheader("編輯卡片資訊")
                 with st.form("edit_form"):
                     st.text_input("卡片名稱", key="edit_name_input")
-                    
                     ec_s1, ec_s2 = st.columns(2)
                     ec_s1.number_input("攻擊數值", min_value=0, step=1, key="edit_attack_input")
                     ec_s2.number_input("特攻數值", min_value=0, step=1, key="edit_sp_attack_input")
-
                     st.selectbox("特殊能力", SPECIAL_TAGS, key="edit_tag_input")
-                    
                     ec1, ec2 = st.columns(2)
                     ec1.selectbox("屬性 1", POKEMON_TYPES, key="edit_t1_input")
                     ec2.selectbox("屬性 2", POKEMON_TYPES, key="edit_t2_input")
-                    
                     st.markdown("**招式資訊**")
                     em1_a, em1_b, em1_c = st.columns([2, 1, 1])
                     em1_a.text_input("一般招式", key="edit_m1_name_input")
                     em1_b.selectbox("屬性", POKEMON_TYPES, key="edit_m1_type_input")
                     em1_c.selectbox("分類", MOVE_CATEGORIES, key="edit_m1_cat_input")
-                    
                     em2_a, em2_b, em2_c = st.columns([2, 1, 1])
                     em2_a.text_input("強力招式", key="edit_m2_name_input")
                     em2_b.selectbox("屬性", POKEMON_TYPES, key="edit_m2_type_input")
                     em2_c.selectbox("分類", MOVE_CATEGORIES, key="edit_m2_cat_input")
-                    
                     st.form_submit_button("✅ 更新資料 (並存檔)", type="primary", on_click=update_card_callback)
-            
             with col_action:
                 st.subheader("危險區域")
                 st.button("🗑️ 刪除此卡片", type="secondary", on_click=delete_card_callback)
-                
                 st.markdown("---")
                 st.markdown("###### 🖼️ 編輯中卡片影像")
                 current_card_name = st.session_state['edit_name_input']
                 if current_card_name:
                     f_path = os.path.join(IMG_DIR, f"{current_card_name}_前.png")
                     b_path = os.path.join(IMG_DIR, f"{current_card_name}_後.png")
-                    
                     if os.path.exists(f_path):
                         st.image(f_path, caption=f"{current_card_name}_正面", use_container_width=True)
                     if os.path.exists(b_path):
@@ -424,26 +364,17 @@ def page_manage_cards():
                     "特殊能力": item['tag'],
                     "招式": moves_str
                 })
-            
             df = pd.DataFrame(display_data)
             df.index = range(1, len(df) + 1)
-            
-            event = st.dataframe(
-                df, 
-                use_container_width=True, 
-                on_select="rerun", 
-                selection_mode="single-row"
-            )
-            
+            event = st.dataframe(df, use_container_width=True, on_select="rerun", selection_mode="single-row")
             if len(event.selection.rows) > 0:
                 selected_idx = event.selection.rows[0]
                 selected_card_name = st.session_state['inventory'][selected_idx]['name']
                 show_card_image_modal(selected_card_name)
-            
             json_str = json.dumps(st.session_state['inventory'], ensure_ascii=False, indent=4)
             st.download_button("⬇️ 下載 JSON 備份檔", json_str, DB_FILE)
 
-# --- 功能 2: 對戰分析 ---
+# --- 功能 2: 對戰分析 (AI 辨識 + 純攻擊) ---
 TYPE_CHART = {
     "一般": {"岩石": 0.5, "幽靈": 0, "鋼": 0.5},
     "火": {"草": 2, "冰": 2, "蟲": 2, "鋼": 2, "水": 0.5, "火": 0.5, "岩石": 0.5, "龍": 0.5},
@@ -477,38 +408,92 @@ def calculate_dual_effectiveness(attacker_type, def_t1, def_t2):
 
 def page_battle():
     st.header("⚔️ 對戰分析 (3 vs 3)")
-    st.info("AI 將計算最佳 AOE 火力。若特殊能力重複，較弱的寶可夢將自動改用一般招式出戰。")
+    st.info("請上傳對戰畫面，AI 將自動辨識寶可夢與屬性，並計算最佳攻擊隊伍 (純傷害輸出導向)。")
     
-    opponents = []
-    cols = st.columns(3)
+    col_img, col_info = st.columns([1, 2])
     
-    for i in range(3):
-        with cols[i]:
-            st.markdown(f"### 🥊 對手 {i+1}")
-            t1 = st.selectbox(f"屬性 1", POKEMON_TYPES, index=0, key=f"op{i}_t1")
-            t2 = st.selectbox(f"屬性 2", POKEMON_TYPES, index=len(POKEMON_TYPES)-1, key=f"op{i}_t2")
-            move_type = st.selectbox(f"**招式屬性 (攻擊我方)**", POKEMON_TYPES, index=0, key=f"op{i}_move")
-            opponents.append({"t1": t1, "t2": t2, "move": move_type})
+    with col_img:
+        st.subheader("1. 畫面上傳")
+        battle_img = st.file_uploader("上傳對戰螢幕截圖", type=["jpg", "png", "jpeg"])
+        if battle_img:
+            st.image(battle_img, width=250)
+            if st.button("🔍 辨識寶可夢與屬性", type="primary"):
+                if not api_key:
+                    st.error("請輸入 Google API Key")
+                else:
+                    with st.spinner("AI 正在分析畫面並查詢屬性資料庫..."):
+                        try:
+                            # 呼叫 Gemini 辨識 + 知識檢索
+                            model = genai.GenerativeModel('gemini-1.5-flash')
+                            # Prompt: 請 AI 辨識圖中三隻寶可夢，並根據其知識庫回傳屬性 (繁體中文)
+                            prompt = """
+                            Identify the names of the 3 Pokemon in this arcade battle screen image.
+                            They are usually displayed with a star ranking.
+                            For each Pokemon, provide its Name (in Traditional Chinese) and its Elemental Types (Type 1 and Type 2) based on your knowledge base.
+                            
+                            Return the result as a JSON list of objects. Each object should have:
+                            - "name": Pokemon name (Traditional Chinese)
+                            - "t1": Type 1 (e.g., "火", "水", "草", "電", "冰", "格鬥", "毒", "地面", "飛行", "超能力", "蟲", "岩石", "幽靈", "龍", "惡", "鋼", "妖精", "一般")
+                            - "t2": Type 2 (same list, or "無" if single type)
+                            
+                            Example JSON format:
+                            [
+                                {"name": "噴火龍", "t1": "火", "t2": "飛行"},
+                                {"name": "皮卡丘", "t1": "電", "t2": "無"},
+                                {"name": "妙蛙花", "t1": "草", "t2": "毒"}
+                            ]
+                            Output ONLY the JSON string.
+                            """
+                            
+                            img_data = Image.open(battle_img)
+                            response = model.generate_content([prompt, img_data])
+                            
+                            # 處理 JSON 回傳
+                            txt = response.text.strip()
+                            if txt.startswith("```json"):
+                                txt = txt.replace("```json", "").replace("```", "")
+                            
+                            opponents_data = json.loads(txt)
+                            
+                            # 更新 Session State
+                            if isinstance(opponents_data, list) and len(opponents_data) == 3:
+                                st.session_state['battle_opponents'] = opponents_data
+                                st.success("辨識成功！屬性已自動帶入。")
+                            else:
+                                st.error("AI 回傳格式不如預期，請重試或手動選擇。")
+                                
+                        except Exception as e:
+                            st.error(f"辨識失敗: {e}")
+
+    with col_info:
+        st.subheader("2. 對手資訊 (可手動修正)")
+        
+        # 顯示/編輯 對手資訊
+        opp_cols = st.columns(3)
+        current_ops = st.session_state['battle_opponents']
+        
+        for i, col in enumerate(opp_cols):
+            with col:
+                st.markdown(f"#### 🥊 {current_ops[i]['name']}")
+                # 這裡的 Key 使用 index 綁定，當 session_state 更新時會連動
+                t1 = st.selectbox(f"屬性 1", POKEMON_TYPES, index=POKEMON_TYPES.index(current_ops[i]['t1']) if current_ops[i]['t1'] in POKEMON_TYPES else 0, key=f"op_{i}_t1")
+                t2 = st.selectbox(f"屬性 2", POKEMON_TYPES, index=POKEMON_TYPES.index(current_ops[i]['t2']) if current_ops[i]['t2'] in POKEMON_TYPES else len(POKEMON_TYPES)-1, key=f"op_{i}_t2")
+                
+                # 更新回 session state (若是手動修改)
+                current_ops[i]['t1'] = t1
+                current_ops[i]['t2'] = t2
 
     st.markdown("---")
     
-    if st.button("🚀 計算最佳攻防隊伍", type="primary"):
+    if st.button("🚀 計算最佳進攻隊伍 (純火力)", type="primary"):
         if not st.session_state['inventory']:
             st.error("卡匣是空的！請先建立資料。")
             return
 
         candidates = []
+        opponents = st.session_state['battle_opponents']
         
         for card in st.session_state['inventory']:
-            
-            risk_factors = []
-            for opp in opponents:
-                my_t1 = card['type']
-                my_t2 = card.get('type2', '無')
-                dmg_taken = calculate_dual_effectiveness(opp['move'], my_t1, my_t2)
-                risk_factors.append(dmg_taken)
-            max_risk = max(risk_factors)
-            safe_risk = max_risk if max_risk > 0 else 0.1
             
             stat_atk = card.get('attack', 100)
             stat_sp_atk = card.get('sp_attack', 100)
@@ -519,6 +504,8 @@ def page_battle():
             
             for idx, move in enumerate(card['moves']):
                 if not move['name']: continue
+                
+                # 計算對三個對手的總傷害倍率
                 eff_sum = 0
                 for opp in opponents:
                     eff_sum += calculate_dual_effectiveness(move['type'], opp['t1'], opp['t2'])
@@ -533,10 +520,10 @@ def page_battle():
                     max_aoe_special = total
                     best_move_special = f"{move['name']}({move['type']}/{cat})"
             
-            score_special = max_aoe_special / safe_risk
+            score_special = max_aoe_special # 純火力分數
             tag_name = card['tag']
             
-            # 優先權重修正：極巨化/Z招式 優先 (x1.3)，其他特殊 (x1.15)
+            # 優先權重修正
             if tag_name in ["極巨化", "Z招式"]:
                 score_special *= 1.3
             elif tag_name != '無':
@@ -550,7 +537,6 @@ def page_battle():
                 "score": score_special,
                 "move": best_move_display_special,
                 "aoe_dmg": max_aoe_special * (1.2 if tag_name != '無' else 1.0),
-                "risk": max_risk,
                 "mode": "special"
             })
             
@@ -559,8 +545,7 @@ def page_battle():
                 max_aoe_normal = 0
                 best_move_normal = ""
                 
-                # 關鍵修正：若降級為一般模式，強制只評估「第一招」(index 0)
-                # 避免推薦第二招 (通常是特殊招式)
+                # 強制只看第一招
                 move = card['moves'][0]
                 if move['name']:
                     eff_sum = 0
@@ -570,13 +555,11 @@ def page_battle():
                     cat = move.get('category', '攻擊')
                     base_stat = stat_atk if cat == '攻擊' else stat_sp_atk
                     
-                    # 第一招係數固定為 1.0
                     total = base_stat * 1.0 * eff_sum
-                    
                     max_aoe_normal = total
                     best_move_normal = f"{move['name']}({move['type']}/{cat})"
                 
-                score_normal = max_aoe_normal / safe_risk
+                score_normal = max_aoe_normal
                 
                 candidates.append({
                     "name": card['name'],
@@ -584,7 +567,6 @@ def page_battle():
                     "score": score_normal, 
                     "move": best_move_normal,
                     "aoe_dmg": max_aoe_normal,
-                    "risk": max_risk,
                     "mode": "normal"
                 })
 
@@ -612,18 +594,11 @@ def page_battle():
                 used_tags.add(tag)
 
         # 顯示結果
-        st.subheader("🏆 推薦出戰陣容")
-        if len(final_team) < 3:
-            st.warning("庫存寶可夢不足 3 隻，僅列出可用名單。")
-            
+        st.subheader("🏆 推薦出戰陣容 (最大化總傷害)")
+        
         cols = st.columns(3)
         for i, p in enumerate(final_team):
             with cols[i]:
-                risk_text = "普通"
-                if p['risk'] >= 2: risk_text = "⚠️ 危險"
-                elif p['risk'] <= 0.5: risk_text = "🛡️ 堅硬"
-                elif p['risk'] == 0: risk_text = "✨ 免疫"
-                
                 tag_display = p['use_tag']
                 if p['mode'] == 'normal' and tag_display == '無':
                      tag_display = "一般招式 (保留特殊能力)"
@@ -633,8 +608,7 @@ def page_battle():
                 ### {p['name']}
                 * **模式**: {tag_display}
                 * **建議**: {p['move']}
-                * **AOE 火力**: {int(p['aoe_dmg'])}
-                * **防禦**: {risk_text} (受傷x{p['risk']})
+                * **AOE 總火力**: {int(p['aoe_dmg'])}
                 """)
 
 # --- 主程式切換 ---
