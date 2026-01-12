@@ -8,8 +8,13 @@ import os
 # --- 設定頁面 ---
 st.set_page_config(page_title="Mezastar 檔案室", layout="wide", page_icon="🗃️")
 
-# --- 設定資料庫檔案名稱 ---
+# --- 設定資料與圖片路徑 ---
 DB_FILE = "mezastar_db.json"
+IMG_DIR = "cardinfo"
+
+# 確保圖片目錄存在
+if not os.path.exists(IMG_DIR):
+    os.makedirs(IMG_DIR)
 
 # --- Helper: 排序資料庫 ---
 def sort_inventory(data):
@@ -35,10 +40,34 @@ def save_db(data):
         sort_inventory(data)
         with open(DB_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
-        # 使用 toast 輕量提示存檔成功
         st.toast("✅ 資料庫已自動存檔！", icon="💾")
     except Exception as e:
         st.error(f"寫入資料庫失敗: {e}")
+
+# --- Helper: 儲存圖片到 cardinfo ---
+def save_card_images(name):
+    """從 Session State 的上傳元件中讀取圖片並存檔"""
+    current_key = st.session_state['uploader_key']
+    
+    # 取得正面圖片物件
+    front_file = st.session_state.get(f"u_front_{current_key}")
+    if front_file:
+        try:
+            img = Image.open(front_file)
+            save_path = os.path.join(IMG_DIR, f"{name}_前.png")
+            img.save(save_path, "PNG")
+        except Exception as e:
+            st.error(f"正面圖片存檔失敗: {e}")
+
+    # 取得背面圖片物件
+    back_file = st.session_state.get(f"u_back_{current_key}")
+    if back_file:
+        try:
+            img = Image.open(back_file)
+            save_path = os.path.join(IMG_DIR, f"{name}_後.png")
+            img.save(save_path, "PNG")
+        except Exception as e:
+            st.error(f"背面圖片存檔失敗: {e}")
 
 # --- API Key 管理 ---
 if "gemini_api_key" in st.secrets:
@@ -155,13 +184,13 @@ def save_new_card_callback():
         ]
     }
     
+    # 儲存圖片到 cardinfo (新增功能)
+    save_card_images(name)
+    
     st.session_state['inventory'].append(new_card)
-    
-    # 1. 自動排序
     sort_inventory(st.session_state['inventory'])
-    
-    # 2. 立即存檔 (修改點)
     save_db(st.session_state['inventory'])
+    
     st.session_state['msg_area'] = f"✅ 已新增並存檔：{name}"
     
     # 清空欄位
@@ -200,12 +229,9 @@ def update_card_callback():
         ]
     }
     st.session_state['inventory'][idx] = updated_card
-    
-    # 自動排序
     sort_inventory(st.session_state['inventory'])
-    
-    # 立即存檔 (修改點)
     save_db(st.session_state['inventory'])
+    
     st.session_state['msg_area'] = f"✅ 已更新並存檔：{updated_card['name']}"
     
     st.session_state['edit_select_index'] = 0
@@ -216,10 +242,11 @@ def delete_card_callback():
     if idx < len(st.session_state['inventory']):
         removed_name = st.session_state['inventory'][idx]['name']
         st.session_state['inventory'].pop(idx)
-        
-        # 立即存檔 (修改點)
         save_db(st.session_state['inventory'])
         st.session_state['msg_area'] = f"🗑️ 已刪除並存檔：{removed_name}"
+        
+        # 選擇性功能：刪除資料時，是否要一併刪除圖片？
+        # 目前為求安全，保留圖片不刪除
         
         st.session_state['edit_select_index'] = 0
         fill_edit_fields()
@@ -228,7 +255,6 @@ def delete_card_callback():
 def page_manage_cards():
     st.header("🗃️ 卡片資料庫管理")
     
-    # 雖然有自動存檔，但保留手動按鈕當作雙重保險也無妨
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 💾 資料庫狀態")
     if st.sidebar.button("手動強制存檔", type="secondary"):
@@ -304,9 +330,7 @@ def page_manage_cards():
             st.info("資料庫目前是空的。")
         else:
             st.subheader("🔍 選擇要管理的卡片")
-            # 確保順序
             sort_inventory(st.session_state['inventory'])
-            
             card_options = [f"{i+1}. {c['name']} ({c['tag']})" for i, c in enumerate(st.session_state['inventory'])]
             
             selected_idx = st.selectbox(
@@ -353,6 +377,27 @@ def page_manage_cards():
             with col_action:
                 st.subheader("危險區域")
                 st.button("🗑️ 刪除此卡片", type="secondary", on_click=delete_card_callback)
+                
+                # --- 新增功能：顯示卡片圖片 ---
+                st.markdown("---")
+                st.markdown("###### 🖼️ 卡片影像確認")
+                
+                # 取得目前編輯的卡片名稱
+                current_card_name = st.session_state['edit_name_input']
+                # 如果名稱為空（可能剛刪除完），則不顯示
+                if current_card_name:
+                    f_path = os.path.join(IMG_DIR, f"{current_card_name}_前.png")
+                    b_path = os.path.join(IMG_DIR, f"{current_card_name}_後.png")
+                    
+                    if os.path.exists(f_path):
+                        st.image(f_path, caption=f"{current_card_name}_正面", use_container_width=True)
+                    else:
+                        st.caption(f"⚠️ 無正面影像 ({f_path})")
+                        
+                    if os.path.exists(b_path):
+                        st.image(b_path, caption=f"{current_card_name}_背面", use_container_width=True)
+                    else:
+                        st.caption(f"⚠️ 無背面影像")
 
     if st.session_state['inventory']:
         st.markdown("---")
