@@ -62,11 +62,6 @@ def save_card_images(name):
 
 # --- Helper: 核心辨識邏輯 (50% 縮放加速版) ---
 def detect_attribute_icons(uploaded_image):
-    """
-    策略：
-    1. 將輸入圖片長寬各縮小一半 (0.5x)，加速運算。
-    2. 載入範本時，也同步縮小一半，維持 1:1 的比對比例。
-    """
     # 1. 讀取圖片
     file_bytes = np.asarray(bytearray(uploaded_image.read()), dtype=np.uint8)
     img_bgr = cv2.imdecode(file_bytes, 1)
@@ -77,7 +72,7 @@ def detect_attribute_icons(uploaded_image):
     new_w, new_h = w // 2, h // 2
     img_resized = cv2.resize(img_bgr, (new_w, new_h))
     
-    # 取下半部 ROI (0.55 ~ 0.98)
+    # 取下半部 ROI
     start_y = int(new_h * 0.55)
     end_y = int(new_h * 0.98)
     img_roi = img_resized[start_y:end_y, :]
@@ -89,12 +84,11 @@ def detect_attribute_icons(uploaded_image):
     if os.path.exists(ICON_DIR):
         for filename in os.listdir(ICON_DIR):
             if filename.endswith(".png"):
-                # 檔名格式: "火_123456.png" -> 取 "火"
                 type_name = filename.split("_")[0]
                 icon_path = os.path.join(ICON_DIR, filename)
                 t_img = cv2.imread(icon_path)
                 if t_img is not None:
-                    # *** 關鍵修正：範本也要縮小 50% ***
+                    # *** 關鍵：範本也要縮小 50% ***
                     t_img_small = cv2.resize(t_img, (0, 0), fx=0.5, fy=0.5)
                     
                     if type_name not in template_groups:
@@ -109,7 +103,6 @@ def detect_attribute_icons(uploaded_image):
     detected_results = [set(), set(), set()]
     col_w = roi_w // 3
     
-    # 進度條
     progress_bar = st.progress(0, text="正在進行快速掃描 (0.5x)...")
     total_types = len(template_groups)
     current_step = 0
@@ -119,9 +112,7 @@ def detect_attribute_icons(uploaded_image):
         progress_bar.progress(int(current_step / total_types * 100), text=f"比對屬性: {type_name}")
 
         for templ in templ_list:
-            # 即使縮小了，還是做一點點多尺度 (0.9 ~ 1.1) 以防微小的距離差異
             scales = np.linspace(0.9, 1.1, 3)
-            
             for scale in scales:
                 t_h, t_w = templ.shape[:2]
                 new_tw, new_th = int(t_w * scale), int(t_h * scale)
@@ -129,11 +120,7 @@ def detect_attribute_icons(uploaded_image):
                 if new_tw > roi_w or new_th > roi_h: continue
                 
                 resized_templ = cv2.resize(templ, (new_tw, new_th))
-                
-                # 使用 TM_CCOEFF_NORMED
                 res = cv2.matchTemplate(img_roi, resized_templ, cv2.TM_CCOEFF_NORMED)
-                
-                # 門檻設為 0.7
                 loc = np.where(res >= 0.7)
                 
                 for pt in zip(*loc[::-1]):
@@ -142,7 +129,6 @@ def detect_attribute_icons(uploaded_image):
                     c_idx = 0
                     if center_x > col_w and center_x < col_w*2: c_idx = 1
                     elif center_x >= col_w*2: c_idx = 2
-                    
                     detected_results[c_idx].add(type_name)
     
     progress_bar.empty()
@@ -242,7 +228,7 @@ def delete_card_callback():
         st.session_state['edit_select_index'] = 0
         fill_edit_fields()
 
-# --- Page: Template Creator (滑鼠框選版) ---
+# --- Page: Template Creator ---
 def page_template_creator():
     st.header("🛠️ 建立圖示範本 (訓練模式)")
     st.info("請上傳螢幕截圖，用滑鼠直接框選屬性圖示，然後儲存為範本。")
@@ -252,10 +238,7 @@ def page_template_creator():
     
     if uploaded_file:
         img = Image.open(uploaded_file)
-        
         st.markdown("👇 **直接在下方圖片上用滑鼠拖曳框選一個圖示：**")
-        
-        # 使用 st_cropper，預設 box_color 為紅，回傳的 cropped_img 會是原始解析度
         cropped_img = st_cropper(img, realtime_update=True, box_color='#FF0000', aspect_ratio=(1,1), key="cropper")
         
         st.markdown("---")
@@ -266,7 +249,6 @@ def page_template_creator():
             
         with col_save:
             icon_type = st.selectbox("這是什麼屬性？", POKEMON_TYPES, key="icon_type_selector")
-            
             if st.button("💾 儲存此範本"):
                 if cropped_img:
                     timestamp = int(pd.Timestamp.now().timestamp())
@@ -281,7 +263,6 @@ def page_template_creator():
                 else:
                     st.error("裁切無效")
 
-    # 管理現有範本
     st.markdown("---")
     st.markdown("### 📚 目前的圖示範本庫")
     if os.path.exists(ICON_DIR):
@@ -290,13 +271,7 @@ def page_template_creator():
         if files:
             img_files = [f for f in files if f.endswith(".png")]
             if img_files:
-                count_dict = {}
-                for f in img_files:
-                    t = f.split("_")[0]
-                    count_dict[t] = count_dict.get(t, 0) + 1
-                
                 st.write(f"總計 {len(img_files)} 個範本。")
-                
                 cols = st.columns(8)
                 for i, f in enumerate(img_files):
                     with cols[i % 8]:
@@ -434,14 +409,11 @@ def page_battle():
     with c_img:
         bf = st.file_uploader("對戰截圖", type=["jpg", "png"], key="battle_uploader")
         
-        # --- 自動清空邏輯 ---
         current_file_name = bf.name if bf else ""
         if current_file_name != st.session_state.get('last_battle_img', ""):
-            # 檔名改變，清空結果
             for i in range(3):
                 st.session_state['battle_config'][i]['detected_weakness'] = []
             st.session_state['last_battle_img'] = current_file_name
-        # ------------------
 
         if bf:
             st.image(bf, width=250)
@@ -507,7 +479,16 @@ def page_battle():
             if tag in ["極巨化", "Z招式"]: score_s *= 1.3
             elif tag != "無": score_s *= 1.15
             
-            cands.append({"name": card['name'], "mode": "special", "tag": tag, "move": best_move_s, "score": score_s, "dmg": max_dmg_s})
+            # 加入 original_tag 以便稍後識別
+            cands.append({
+                "name": card['name'], 
+                "mode": "special", 
+                "tag": tag, 
+                "original_tag": tag,
+                "move": best_move_s, 
+                "score": score_s, 
+                "dmg": max_dmg_s
+            })
 
             # Mode B: Normal
             if tag != "無":
@@ -521,7 +502,17 @@ def page_battle():
                     
                     base = atk_v if m.get('category') == '攻擊' else sp_atk_v
                     dmg = base * 1.0 * eff_total
-                    cands.append({"name": card['name'], "mode": "normal", "tag": "無", "move": f"{m['name']}({m['type']})", "score": dmg, "dmg": dmg})
+                    
+                    # 關鍵：Mode B 的 tag 設為"無"，但保留 original_tag
+                    cands.append({
+                        "name": card['name'], 
+                        "mode": "normal", 
+                        "tag": "無", 
+                        "original_tag": tag,
+                        "move": f"{m['name']}({m['type']})", 
+                        "score": dmg, 
+                        "dmg": dmg
+                    })
 
         cands.sort(key=lambda x: x['score'], reverse=True)
         
@@ -540,7 +531,23 @@ def page_battle():
         for i, p in enumerate(team):
             with cols[i]:
                 t_txt = p['tag']
-                if p['mode'] == 'normal' and t_txt == '無': t_txt = "一般招式 (保留特殊)"
+                
+                # --- 顯示邏輯修正 ---
+                if t_txt == "Mega進化":
+                    # 主動使用 Mega (Mode A)
+                    t_txt = "一般招式 (Mega進化)"
+                elif p['mode'] == 'normal' and p['original_tag'] != "無":
+                    # 被降級為一般模式 (Mode B)，檢查原本是否有特殊標籤
+                    if p['original_tag'] == "Mega進化":
+                        # 這裡依您的邏輯，若被降級可能代表不使用 Mega? 
+                        # 但 Mezastar 通常綁定卡片本身。
+                        # 若您希望 Mega 卡片無論如何都顯示 Mega：
+                        t_txt = "一般招式 (Mega進化)" 
+                    else:
+                        t_txt = "一般招式 (保留特殊)"
+                elif t_txt == "無":
+                    t_txt = "一般招式"
+                
                 st.success(f"**第 {i+1} 棒**\n\n### {p['name']}\n* **模式**: {t_txt}\n* **建議**: {p['move']}\n* **預估火力**: {int(p['dmg'])}")
 
 # --- Main ---
