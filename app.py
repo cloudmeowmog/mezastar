@@ -57,13 +57,13 @@ def save_card_images(name):
     if back:
         Image.open(back).save(os.path.join(IMG_DIR, f"{name}_後.png"), "PNG")
 
-# --- Helper: 方框偵測 + 紋理比對 (Box Detection + Texture Matching) ---
-def detect_attribute_icons(uploaded_image, show_debug=False):
+# --- Helper: 方框偵測 + 紋理比對 (核心辨識邏輯) ---
+def detect_attribute_icons(uploaded_image):
     """
     1. 影像前處理 (自適應二值化)
-    2. 尋找並過濾出「四邊形」輪廓 (方框)
-    3. 裁切方框內容 -> 縮放至 64x64
-    4. 與 ICON_DIR 內的圖示 (同樣縮放至 64x64) 進行比對
+    2. 尋找方框輪廓 (篩選面積與長寬比)
+    3. 裁切方框內容 -> 強制縮放至 64x64
+    4. 與 att_icon 內的圖示 (同樣縮放至 64x64) 進行灰階比對
     """
     # 1. 讀取圖片
     file_bytes = np.asarray(bytearray(uploaded_image.read()), dtype=np.uint8)
@@ -73,14 +73,14 @@ def detect_attribute_icons(uploaded_image, show_debug=False):
         return [[], [], []]
 
     # 2. 影像前處理
-    # 縮放到寬度 1200px (較高解析度有利於輪廓完整性)
+    # 縮放到寬度 1200px (維持解析度以利輪廓偵測)
     target_width = 1200
     h, w, _ = img_bgr.shape
     scale = target_width / w
     new_h = int(h * scale)
     img_resized = cv2.resize(img_bgr, (target_width, new_h))
     
-    # 取下半部 ROI (0.55 ~ 1.0)
+    # 取下半部 ROI (0.55 ~ 1.0) 避開上方干擾
     start_y = int(new_h * 0.55)
     img_roi = img_resized[start_y:, :]
     
@@ -90,12 +90,11 @@ def detect_attribute_icons(uploaded_image, show_debug=False):
     # 高斯模糊 (減少螢幕網點雜訊)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     
-    # 自適應二值化 (Adaptive Thresholding) - 對抗螢幕反光最有效
-    # 參數 19, 5 是經驗值，若雜訊太多可調大 blockSize (19->25) 或 C (5->10)
+    # 自適應二值化 (Adaptive Thresholding) - 對抗反光
     thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
                                    cv2.THRESH_BINARY_INV, 19, 5)
     
-    # 形態學閉運算 (連接斷掉的邊線)
+    # 形態學操作 (連接斷線)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
     thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
 
@@ -103,9 +102,8 @@ def detect_attribute_icons(uploaded_image, show_debug=False):
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     roi_h, roi_w = img_roi.shape[:2]
-    img_debug = img_roi.copy() # 用來畫框框的圖
     
-    # 4. 載入範本 (Templates) 並標準化
+    # 4. 準備範本 (Templates)
     templates = {}
     STANDARD_SIZE = (64, 64)
     
@@ -116,66 +114,54 @@ def detect_attribute_icons(uploaded_image, show_debug=False):
                 icon_path = os.path.join(ICON_DIR, filename)
                 t_img = cv2.imread(icon_path)
                 if t_img is not None:
-                    # 為了抗色偏，灰階比對紋路通常較穩。
+                    # 轉灰階並縮放
                     t_gray = cv2.cvtColor(t_img, cv2.COLOR_BGR2GRAY)
                     t_resized = cv2.resize(t_gray, STANDARD_SIZE)
                     templates[type_name] = t_resized
 
     if not templates:
+        st.warning("⚠️ `att_icon` 資料夾為空，無法進行比對。")
         return [[], [], []]
 
-    # 5. 輪廓分析與比對
+    # 5. 輪廓篩選與比對
     detected_results = [set(), set(), set()]
     col_w = roi_w // 3
     
     for cnt in contours:
-        # 計算面積
         area = cv2.contourArea(cnt)
         
-        # 初步過濾：面積 (在1200px寬的圖中，圖示大約是 800~6000)
-        # 如果一直抓不到，可以把範圍放寬 (e.g., 500 ~ 8000)
-        if area < 800 or area > 8000:
+        # 條件 1: 面積適中 (1200px寬圖中，圖示約 600~6000 px)
+        if area < 600 or area > 6000:
             continue
             
-        # 形狀過濾：近似多邊形
-        peri = cv2.arcLength(cnt, True)
-        approx = cv2.approxPolyDP(cnt, 0.04 * peri, True)
-        
-        #  bounding rect
+        # 條件 2: 形狀像方塊 (長寬比接近 1)
         x, y, w, h = cv2.boundingRect(cnt)
         aspect_ratio = float(w) / h
         
-        # 條件：
-        # 1. 頂點數接近 4 (考慮到圓角或雜訊，4~6 都可以接受，甚至不檢查頂點只檢查長寬比)
-        # 2. 長寬比接近 1 (0.7 ~ 1.4)
-        if 0.7 < aspect_ratio < 1.4:
-            
-            # 取得該區域的圖像 (Crop)
-            pad = 2
-            x1, y1 = max(0, x-pad), max(0, y-pad)
-            x2, y2 = min(roi_w, x+w+pad), min(roi_h, y+h+pad)
-            crop = img_roi[y1:y2, x1:x2]
+        if 0.75 < aspect_ratio < 1.35:
+            # 取得 ROI (裁切)
+            # 稍微內縮一點(padding negative)或是剛好，避免切到邊框線
+            # 這裡選擇剛好切下
+            crop = img_roi[y:y+h, x:x+w]
             
             if crop.size == 0: continue
             
-            # *** 核心：歸一化 ***
-            # 將裁切下來的「可能是圖示的東西」縮放到跟範本一樣大
+            # 轉灰階並強制縮放到標準大小
             crop_gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
             crop_resized = cv2.resize(crop_gray, STANDARD_SIZE)
             
-            # 進行比對
+            # 與所有範本比對
             best_score = -1
             best_label = None
             
             for t_name, t_img in templates.items():
-                # 使用相關係數匹配
                 res = cv2.matchTemplate(crop_resized, t_img, cv2.TM_CCOEFF_NORMED)
                 score = np.max(res)
                 if score > best_score:
                     best_score = score
                     best_label = t_name
             
-            # 設定門檻值 (0.55 左右通常是安全值)
+            # 條件 3: 相似度門檻 (0.55 是一個經驗上的安全值)
             if best_score > 0.55:
                 # 判斷位置 (左/中/右)
                 center_x = x + w // 2
@@ -186,22 +172,10 @@ def detect_attribute_icons(uploaded_image, show_debug=False):
                     c_idx = 2
                 
                 detected_results[c_idx].add(best_label)
-                
-                # 畫圖 (綠框代表抓到)
-                cv2.rectangle(img_debug, (x, y), (x+w, y+h), (0, 255, 0), 3)
-                cv2.putText(img_debug, f"{best_label}", (x, y-5), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            else:
-                # 畫圖 (紅框代表形狀像方框，但內容對不上，方便除錯)
-                if show_debug:
-                    cv2.rectangle(img_debug, (x, y), (x+w, y+h), (0, 0, 255), 2)
 
-    if show_debug:
-        st.write("🔍 [除錯] 偵測結果 (綠框=成功, 紅框=形狀吻合但內容不符):")
-        st.image(cv2.cvtColor(img_debug, cv2.COLOR_BGR2RGB), use_container_width=True)
-
+    # 轉回 list 格式回傳
     final_output = [list(s) for s in detected_results]
-    uploaded_image.seek(0)
+    uploaded_image.seek(0) # 重置檔案讀取指標
     return final_output
 
 # --- 初始化 Session State ---
@@ -317,7 +291,7 @@ def page_manage_cards():
                     n = os.path.splitext(f.name)[0].replace("_前", "").replace("_front", "")
                     st.session_state['add_name_input'] = n
                     st.session_state['last_p'] = f.name
-                    st.rerun()
+                    # 注意：這裡不呼叫 st.rerun()，依靠 Streamlit 自動刷新
             if b: st.image(b, caption="背面預覽", use_container_width=True)
         with c2:
             with st.form("add"):
@@ -420,17 +394,15 @@ def page_battle():
     c_img, c_cfg = st.columns([1, 2])
     with c_img:
         bf = st.file_uploader("對戰截圖", type=["jpg", "png"])
-        debug_mode = st.checkbox("顯示除錯影像 (查看抓到的方框)", value=False)
-        
         if bf:
             st.image(bf, width=250)
             if st.button("📸 掃描有利屬性", type="primary"):
-                detected = detect_attribute_icons(bf, show_debug=debug_mode) 
+                detected = detect_attribute_icons(bf) 
                 for i in range(3):
                     st.session_state['battle_config'][i]['detected_weakness'] = detected[i]
                 
                 if not any(detected):
-                    st.warning("⚠️ 未偵測到圖示。請嘗試開啟「除錯影像」檢查是否抓到方框。")
+                    st.warning("⚠️ 未偵測到圖示，請檢查圖片清晰度或 att_icon 圖示是否正確。")
                 else:
                     st.success("掃描完成！")
 
@@ -470,7 +442,6 @@ def page_battle():
                 eff_total = 0
                 for i in range(3):
                     eff = get_effectiveness(m['type'], cfg[i]['manual_t1']) * get_effectiveness(m['type'], cfg[i]['manual_t2'])
-                    # 如果偵測到有利屬性，強制給予 2.5 倍
                     if m['type'] in cfg[i]['detected_weakness']:
                         eff = max(eff, 2.5)
                     eff_total += eff
