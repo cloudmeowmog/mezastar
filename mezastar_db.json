@@ -1,5 +1,205 @@
 [
     {
+        "name": "1-1-005_班基拉斯",
+        "attack": 147,
+        "sp_attack": 105,
+        "tag": "極巨化",
+        "type": "岩石",
+        "type2": "惡",
+        "moves": [
+            {
+                "name": "尖石攻擊",
+                "type": "岩石",
+                "category": "攻擊"
+            },
+            {
+                "name": "極巨岩石",
+                "type": "岩石",
+                "category": "攻擊"
+            }
+        ]
+    },
+    {
+        "name": "1-1-006_巨金怪",
+        "attack": 148,
+        "sp_attack": 105,
+        "tag": "極巨化",
+        "type": "鋼",
+        "type2": "超能力",
+        "moves": [
+            {
+                "name": "彗星拳",
+                "type": "鋼",
+                "category": "攻擊"
+            },
+            {
+                "name": "極巨鋼鐵",
+                "type": "鋼",
+                "category": "攻擊"
+            }
+        ]
+    },
+    {
+        "name": "1-1-008_妙蛙花",
+        "attack": 87,
+        "sp_attack": 105,
+        "tag": "Mega進化",
+        "type": "草",
+        "type2": "毒",
+        "moves": [
+            {
+                "name": "飛葉風暴",
+                "type": "草",
+                "category": "特攻"
+            },
+            {
+                "name": "",
+                "type": "一般",
+                "category": "攻擊"
+            }
+        ]
+    },
+    {
+        "name": "1-1-009_噴火龍",
+        "attack": 89,
+        "sp_attack": 114,
+        "tag": "Mega進化",
+        "type": "火",
+        "type2": "飛行",
+        "moves": [
+            {
+                "name": "噴射火焰",
+                "type": "火",
+                "category": "特攻"
+            },
+            {
+                "name": "",
+                "type": "一般",
+                "category": "攻擊"
+            }
+        ]
+    },
+    {
+        "name": "1-1-010_水箭龜",
+        "attack": 88,
+        "sp_attack": 90,
+        "tag": "Mega進化",
+        "type": "水",
+        "type2": "無",
+        "moves": [
+            {
+                "name": "水砲",
+                "type": "水",
+                "category": "特攻"
+            },
+            {
+                "name": "",
+                "type": "一般",
+                "category": "攻擊"
+            }
+        ]
+    },
+    {
+        "name": "1-1-015_大比鳥",
+        "attack": 75,
+        "sp_attack": 66,
+        "tag": "Mega進化",
+        "type": "一般",
+        "type2": "飛行",
+        "moves": [
+            {
+                "name": "暴風",
+                "type": "飛行",
+                "category": "特攻"
+            },
+            {
+                "name": "",
+                "type": "一般",
+                "category": "攻擊"
+            }
+        ]
+    },
+    {
+        "name": "1-1-016_耿鬼",
+        "attack": 64,
+        "sp_attack": 124,
+        "tag": "Mega進化",
+        "type": "幽靈",
+        "type2": "毒",
+        "moves": [
+            {
+                "name": "暗影球",
+                "type": "幽靈",
+                "category": "特攻"
+            },
+            {
+                "name": "",
+                "type": "一般",
+                "category": "攻擊"
+            }
+        ]
+    },
+    {
+        "name": "1-1-017_風速狗",
+        "attack": 101,
+        "sp_attack": 93,
+        "tag": "Z招式",
+        "type": "火",
+        "type2": "無",
+        "moves": [
+            {
+                "name": "大字爆炎",
+                "type": "火",
+                "category": "特攻"
+            },
+            {
+                "name": "超強極限爆焰彈",
+                "type": "火",
+                "category": "特攻"
+            }
+        ]
+    },
+    {
+        "name": "1-1-018_超甲狂犀",
+        "attack": 128,
+        "sp_attack": 53,
+        "tag": "Z招式",
+        "type": "地面",
+        "type2": "岩石",
+        "moves": [
+            {
+                "name": "地震",
+                "type": "地面",
+                "category": "攻擊"
+            },
+            {
+                "name": "地隆嘯天大終結",
+                "type": "地面",
+                "category": "攻擊"
+            }
+        ]
+    },
+    {
+        "name": "1-1-019_皮卡丘",
+        "attack": 72,
+        "sp_attack": 66,
+        "tag": "極巨化",
+        "type": "電",
+        "type2": "無",
+        "moves": [
+            {
+                "name": "十萬伏特",
+                "type": "電",
+                "category": "特攻"
+            },
+            {
+                "name": "極巨閃電",
+                "type": "電",
+                "category": "特攻"
+            }
+        ]
+    },
+    {
         "name": "1-3-005_甲賀忍蛙",
         "attack": 115,
         "sp_attack": 124,
@@ -61,20 +261,23 @@
     },
     {
         "name": "1-3-009_長毛巨魔",
+        "attack": 134,
+        "sp_attack": 107,
         "tag": "極巨化",
         "type": "惡",
         "type2": "妖精",
         "moves": [
             {
                 "name": "靈魂衝擊",
-                "type": "妖精"
+                "type": "妖精",
+                "category": "攻擊"
             },
             {
                 "name": "極巨妖精",
-                "type": "妖精"
+                "type": "妖精",
+                "category": "攻擊"
             }
-        ],
-        "power": 100
+        ]
     },
     {
         "name": "1-4-005_白馬蕾冠王",
