@@ -373,7 +373,7 @@ def page_manage_cards():
             json_str = json.dumps(st.session_state['inventory'], ensure_ascii=False, indent=4)
             st.download_button("⬇️ 下載 JSON 備份檔", json_str, DB_FILE)
 
-# --- 功能 2: 對戰分析 (AI 辨識 + 純攻擊) ---
+# --- 功能 2: 對戰分析 (AI 辨識 + 純攻擊 + 多模型容錯) ---
 TYPE_CHART = {
     "一般": {"岩石": 0.5, "幽靈": 0, "鋼": 0.5},
     "火": {"草": 2, "冰": 2, "蟲": 2, "鋼": 2, "水": 0.5, "火": 0.5, "岩石": 0.5, "龍": 0.5},
@@ -421,60 +421,77 @@ def page_battle():
                     st.error("請輸入 Google API Key")
                 else:
                     with st.spinner("AI 正在分析畫面並查詢屬性資料庫..."):
-                        try:
-                            # 嘗試多種模型名稱，以防 API 版本差異
-                            available_models = ["gemini-1.5-flash-001", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro-vision"]
-                            response = None
-                            
-                            prompt = """
-                            Identify the names of the 3 Pokemon in this arcade battle screen image.
-                            They are usually displayed with a star ranking.
-                            For each Pokemon, provide its Name (in Traditional Chinese) and its Elemental Types (Type 1 and Type 2) based on your knowledge base.
-                            
-                            Return the result as a JSON list of objects. Each object should have:
-                            - "name": Pokemon name (Traditional Chinese)
-                            - "t1": Type 1 (e.g., "火", "水", "草", "電", "冰", "格鬥", "毒", "地面", "飛行", "超能力", "蟲", "岩石", "幽靈", "龍", "惡", "鋼", "妖精", "一般")
-                            - "t2": Type 2 (same list, or "無" if single type)
-                            
-                            Example JSON format:
-                            [
-                                {"name": "噴火龍", "t1": "火", "t2": "飛行"},
-                                {"name": "皮卡丘", "t1": "電", "t2": "無"},
-                                {"name": "妙蛙花", "t1": "草", "t2": "毒"}
-                            ]
-                            Output ONLY the JSON string.
-                            """
-                            
-                            img_data = Image.open(battle_img)
-                            
-                            # 迴圈嘗試模型
-                            for model_name in available_models:
-                                try:
-                                    model = genai.GenerativeModel(model_name)
-                                    response = model.generate_content([prompt, img_data])
-                                    # 如果成功產生內容，就跳出迴圈
-                                    if response and response.text:
-                                        break
-                                except Exception:
-                                    continue # 失敗就換下一個模型
-                            
-                            if not response:
-                                raise Exception("無法連接任何已知的 Gemini 模型，請檢查 API Key 或網路。")
-                            
-                            txt = response.text.strip()
-                            if txt.startswith("```json"):
-                                txt = txt.replace("```json", "").replace("```", "")
-                            
-                            opponents_data = json.loads(txt)
-                            
-                            if isinstance(opponents_data, list) and len(opponents_data) == 3:
-                                st.session_state['battle_opponents'] = opponents_data
-                                st.success("辨識成功！屬性已自動帶入。")
-                            else:
-                                st.error("AI 回傳格式不如預期，請重試或手動選擇。")
+                        # --- 嘗試多個模型的容錯清單 ---
+                        available_models = [
+                            "gemini-2.0-flash-exp", # 優先嘗試 2.0
+                            "gemini-1.5-flash", 
+                            "gemini-1.5-pro",
+                            "gemini-pro-vision"
+                        ]
+                        
+                        success = False
+                        response = None
+                        used_model = ""
+                        error_log = []
+
+                        prompt = """
+                        Identify the names of the 3 Pokemon in this arcade battle screen image.
+                        They are usually displayed with a star ranking.
+                        For each Pokemon, provide its Name (in Traditional Chinese) and its Elemental Types (Type 1 and Type 2) based on your knowledge base.
+                        
+                        Return the result as a JSON list of objects. Each object should have:
+                        - "name": Pokemon name (Traditional Chinese)
+                        - "t1": Type 1 (e.g., "火", "水", "草", "電", "冰", "格鬥", "毒", "地面", "飛行", "超能力", "蟲", "岩石", "幽靈", "龍", "惡", "鋼", "妖精", "一般")
+                        - "t2": Type 2 (same list, or "無" if single type)
+                        
+                        Example JSON format:
+                        [
+                            {"name": "噴火龍", "t1": "火", "t2": "飛行"},
+                            {"name": "皮卡丘", "t1": "電", "t2": "無"},
+                            {"name": "妙蛙花", "t1": "草", "t2": "毒"}
+                        ]
+                        Output ONLY the JSON string.
+                        """
+                        
+                        img_data = Image.open(battle_img)
+
+                        for model_name in available_models:
+                            try:
+                                model = genai.GenerativeModel(model_name)
+                                response = model.generate_content([prompt, img_data])
+                                if response and response.text:
+                                    success = True
+                                    used_model = model_name
+                                    break
+                            except Exception as e:
+                                error_log.append(f"{model_name}: {e}")
+                                continue
+                        
+                        if success:
+                            try:
+                                txt = response.text.strip()
+                                if txt.startswith("```json"):
+                                    txt = txt.replace("```json", "").replace("```", "")
                                 
-                        except Exception as e:
-                            st.error(f"辨識失敗: {e}")
+                                opponents_data = json.loads(txt)
+                                
+                                if isinstance(opponents_data, list) and len(opponents_data) == 3:
+                                    st.session_state['battle_opponents'] = opponents_data
+                                    st.success(f"辨識成功！(使用模型: {used_model})")
+                                else:
+                                    st.error("AI 回傳格式不如預期，請重試或手動選擇。")
+                            except Exception as e:
+                                st.error(f"解析 JSON 失敗: {e}")
+                        else:
+                            st.error("❌ 所有 AI 模型嘗試皆失敗。")
+                            st.write("詳細錯誤紀錄:", error_log)
+                            # 顯示目前 API Key 可用的模型列表，方便 Debug
+                            try:
+                                st.info("正在列出您 API Key 可用的模型列表...")
+                                my_models = [m.name for m in genai.list_models()]
+                                st.json(my_models)
+                            except Exception as e_list:
+                                st.error(f"無法列取模型列表: {e_list}")
 
     with col_info:
         st.subheader("2. 對手資訊 (可手動修正)")
