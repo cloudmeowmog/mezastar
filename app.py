@@ -422,8 +422,9 @@ def page_battle():
                 else:
                     with st.spinner("AI 正在分析畫面並查詢屬性資料庫..."):
                         try:
-                            # 修正：使用更具體的模型名稱，避免 404
-                            model = genai.GenerativeModel('gemini-1.5-flash-latest')
+                            # 嘗試多種模型名稱，以防 API 版本差異
+                            available_models = ["gemini-1.5-flash-001", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro-vision"]
+                            response = None
                             
                             prompt = """
                             Identify the names of the 3 Pokemon in this arcade battle screen image.
@@ -445,7 +446,20 @@ def page_battle():
                             """
                             
                             img_data = Image.open(battle_img)
-                            response = model.generate_content([prompt, img_data])
+                            
+                            # 迴圈嘗試模型
+                            for model_name in available_models:
+                                try:
+                                    model = genai.GenerativeModel(model_name)
+                                    response = model.generate_content([prompt, img_data])
+                                    # 如果成功產生內容，就跳出迴圈
+                                    if response and response.text:
+                                        break
+                                except Exception:
+                                    continue # 失敗就換下一個模型
+                            
+                            if not response:
+                                raise Exception("無法連接任何已知的 Gemini 模型，請檢查 API Key 或網路。")
                             
                             txt = response.text.strip()
                             if txt.startswith("```json"):
@@ -520,7 +534,7 @@ def page_battle():
             elif tag_name != '無':
                 score_special *= 1.15
             
-            best_move_display_special = best_move_special # Syntax fixed
+            best_move_display_special = best_move_special
             
             candidates.append({
                 "name": card['name'],
