@@ -59,33 +59,33 @@ def save_card_images(name):
     if back:
         Image.open(back).save(os.path.join(IMG_DIR, f"{name}_後.png"), "PNG")
 
-# --- Helper: 針對裁切區域的辨識邏輯 ---
+# --- Helper: 核心辨識邏輯 (Scanner 模式 + 0.5x 縮放) ---
 def detect_attribute_icons_from_crop(cropped_image_pil):
     """
-    接收使用者裁切好的 PIL 圖片。
-    1. 轉為 CV2 格式。
-    2. 自動將長條圖分為左、中、右三等份。
-    3. 進行多尺度範本比對。
+    接收使用者裁切好的 PIL 圖片 (Scanner 選取範圍)。
+    1. 轉為 BGR。
+    2. 依照指示縮小長寬各一半 (0.5x)。
+    3. 自動分割為左/中/右。
+    4. 載入範本並同步縮小 0.5x 進行比對。
     """
     if not cropped_image_pil: return [[], [], []]
 
-    # 1. 轉 BGR
+    # 1. 轉 BGR (OpenCV 格式)
     img_bgr = cv2.cvtColor(np.array(cropped_image_pil), cv2.COLOR_RGB2BGR)
     
-    # 2. 影像前處理：統一高度以利比對 (屬性條通常是扁長型)
-    # 設定一個標準高度 (例如 120px)，這樣範本縮放比較好抓
-    target_h = 120
+    # 2. 影像前處理：長寬各縮小一半 (解析度變為 1/4)
     h, w, _ = img_bgr.shape
-    scale_factor = target_h / h
-    new_w = int(w * scale_factor)
+    new_w, new_h = int(w * 0.5), int(h * 0.5)
     
-    # 如果圖片太小就不縮放，直接用原圖
-    if h < target_h:
+    # 防呆：如果圖片本身就很小，就不縮了，避免糊掉
+    if new_w < 50 or new_h < 20:
         img_resized = img_bgr
+        scale_ratio = 1.0
     else:
-        img_resized = cv2.resize(img_bgr, (new_w, target_h))
+        img_resized = cv2.resize(img_bgr, (new_w, new_h))
+        scale_ratio = 0.5
 
-    # 3. 載入範本
+    # 3. 載入範本 (Templates) 並同步縮放
     template_groups = {}
     if os.path.exists(ICON_DIR):
         for filename in os.listdir(ICON_DIR):
@@ -94,9 +94,11 @@ def detect_attribute_icons_from_crop(cropped_image_pil):
                 icon_path = os.path.join(ICON_DIR, filename)
                 t_img = cv2.imread(icon_path)
                 if t_img is not None:
+                    # *** 關鍵：範本也要縮小 0.5x，維持 1:1 比對 ***
+                    t_img_small = cv2.resize(t_img, (0, 0), fx=scale_ratio, fy=scale_ratio)
                     if type_name not in template_groups:
                         template_groups[type_name] = []
-                    template_groups[type_name].append(t_img)
+                    template_groups[type_name].append(t_img_small)
 
     if not template_groups:
         return [[], [], []]
@@ -105,6 +107,7 @@ def detect_attribute_icons_from_crop(cropped_image_pil):
     detected_results = [set(), set(), set()]
     
     # 定義三個區域 (左/中/右)
+    # 在縮小後的圖上計算寬度
     col_w = img_resized.shape[1] // 3
     
     # 建立 ROI (Region of Interest)
@@ -115,7 +118,7 @@ def detect_attribute_icons_from_crop(cropped_image_pil):
         (img_resized[:, col_w*2:], 2)           # 右
     ]
 
-    progress_bar = st.progress(0, text="正在分析選取區域...")
+    progress_bar = st.progress(0, text="正在分析選取區域 (0.5x 縮放)...")
     total_types = len(template_groups)
     current_step = 0
 
@@ -124,8 +127,9 @@ def detect_attribute_icons_from_crop(cropped_image_pil):
         progress_bar.progress(int(current_step / total_types * 100), text=f"比對: {type_name}")
 
         for templ in templ_list:
-            # 多尺度比對：範圍放寬一點，因為手動裁切高度不一
-            scales = np.linspace(0.5, 1.5, 8) 
+            # 多尺度比對：範圍縮小，因為我們已經手動對齊且同步縮放了
+            # 0.9 ~ 1.1 足以應對拍攝距離的微小差異
+            scales = np.linspace(0.9, 1.1, 3) 
             
             for scale in scales:
                 t_h, t_w = templ.shape[:2]
@@ -240,26 +244,24 @@ def delete_card_callback():
         st.session_state['edit_select_index'] = 0
         fill_edit_fields()
 
-# --- Page: Template Creator (修正為自由裁切) ---
+# --- Page: Template Creator ---
 def page_template_creator():
     st.header("🛠️ 建立圖示範本 (訓練模式)")
     st.info("請上傳螢幕截圖，用滑鼠直接框選屬性圖示，然後儲存為範本。")
-    st.markdown("> **注意**：這裡建立的範本會直接使用原始解析度，請確保裁切精準。")
+    st.markdown("> **注意**：這裡建立的範本是高解析度的，程式在比對時會自動與縮小後的截圖同步處理。")
     
     uploaded_file = st.file_uploader("上傳含有屬性圖示的照片", type=["jpg", "png", "jpeg"], key="template_uploader")
     
     if uploaded_file:
         img = Image.open(uploaded_file)
         st.markdown("👇 **直接在下方圖片上用滑鼠拖曳框選一個圖示：**")
-        
-        # aspect_ratio=None 允許自由調整長寬
-        cropped_img = st_cropper(img, realtime_update=True, box_color='#FF0000', aspect_ratio=None, key="cropper")
+        cropped_img = st_cropper(img, realtime_update=True, box_color='#FF0000', aspect_ratio=(1,1), key="cropper")
         
         st.markdown("---")
         col_preview, col_save = st.columns([1, 2])
         
         with col_preview:
-            st.image(cropped_img, caption="裁切預覽", width=100)
+            st.image(cropped_img, caption="裁切預覽 (原圖解析度)", width=100)
             
         with col_save:
             icon_type = st.selectbox("這是什麼屬性？", POKEMON_TYPES, key="icon_type_selector")
@@ -268,10 +270,8 @@ def page_template_creator():
                     timestamp = int(pd.Timestamp.now().timestamp())
                     save_name = f"{icon_type}_{timestamp}.png"
                     save_path = os.path.join(ICON_DIR, save_name)
-                    
                     img_array = np.array(cropped_img)
                     img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
-                    
                     cv2.imwrite(save_path, img_bgr)
                     st.success(f"✅ 已儲存範本：{save_name}")
                 else:
@@ -297,97 +297,6 @@ def page_template_creator():
                 st.info("資料夾內無 PNG 圖片。")
         else:
             st.info("目前沒有範本。")
-
-# --- Page: Manage Cards ---
-def page_manage_cards():
-    st.header("🗃️ 卡片資料庫管理")
-    st.sidebar.markdown("---")
-    if st.sidebar.button("手動強制存檔", type="secondary"): save_db(st.session_state['inventory'])
-    if st.session_state['msg_area']: st.success(st.session_state['msg_area']); st.session_state['msg_area'] = ""
-    
-    sub = st.radio("功能", ["➕ 新增卡片", "✏️ 編輯與刪除"], horizontal=True, key="manage_sub_mode")
-    st.markdown("---")
-    
-    if sub == "➕ 新增卡片":
-        c1, c2 = st.columns([1, 2])
-        with c1:
-            key = st.session_state['uploader_key']
-            f = st.file_uploader("正面", type=["jpg","png"], key=f"u_front_{key}")
-            b = st.file_uploader("背面", type=["jpg","png"], key=f"u_back_{key}")
-            if f: 
-                st.image(f, caption="正面預覽", use_container_width=True)
-                if 'last_p' not in st.session_state or st.session_state['last_p'] != f.name:
-                    n = os.path.splitext(f.name)[0].replace("_前", "").replace("_front", "")
-                    st.session_state['add_name_input'] = n
-                    st.session_state['last_p'] = f.name
-            if b: st.image(b, caption="背面預覽", use_container_width=True)
-        with c2:
-            with st.form("add"):
-                st.text_input("名稱", key="add_name_input")
-                c_s1, c_s2 = st.columns(2)
-                c_s1.number_input("攻擊", min_value=0, step=1, key="add_attack_input")
-                c_s2.number_input("特攻", min_value=0, step=1, key="add_sp_attack_input")
-                st.selectbox("特殊能力", SPECIAL_TAGS, key="add_tag_input")
-                c_t1, c_t2 = st.columns(2)
-                c_t1.selectbox("屬性1", POKEMON_TYPES, key="add_t1_input")
-                c_t2.selectbox("屬性2", POKEMON_TYPES, index=len(POKEMON_TYPES)-1, key="add_t2_input")
-                st.markdown("---")
-                m1a, m1b, m1c = st.columns([2,1,1])
-                m1a.text_input("一般招式", key="add_m1_name_input")
-                m1b.selectbox("屬性", POKEMON_TYPES, key="add_m1_type_input")
-                m1c.selectbox("分類", MOVE_CATEGORIES, key="add_m1_cat_input")
-                m2a, m2b, m2c = st.columns([2,1,1])
-                m2a.text_input("強力招式", key="add_m2_name_input")
-                m2b.selectbox("屬性", POKEMON_TYPES, key="add_m2_type_input")
-                m2c.selectbox("分類", MOVE_CATEGORIES, key="add_m2_cat_input")
-                st.form_submit_button("💾 新增並存檔", type="primary", on_click=lambda: common_save(True))
-
-    else: # Edit
-        if not st.session_state['inventory']: st.info("無資料"); return
-        sort_inventory(st.session_state['inventory'])
-        opts = [f"{i+1}. {c['name']}" for i, c in enumerate(st.session_state['inventory'])]
-        st.selectbox("選擇卡片", range(len(opts)), format_func=lambda x: opts[x], key="edit_select_index", on_change=fill_edit_fields)
-        if not st.session_state['edit_name_input']: fill_edit_fields()
-        
-        c1, c2 = st.columns([3, 1])
-        with c1:
-            with st.form("edit"):
-                st.text_input("名稱", key="edit_name_input")
-                c_s1, c_s2 = st.columns(2)
-                c_s1.number_input("攻擊", key="edit_attack_input")
-                c_s2.number_input("特攻", key="edit_sp_attack_input")
-                st.selectbox("特殊", SPECIAL_TAGS, key="edit_tag_input")
-                c_t1, c_t2 = st.columns(2)
-                c_t1.selectbox("屬性1", POKEMON_TYPES, key="edit_t1_input")
-                c_t2.selectbox("屬性2", POKEMON_TYPES, key="edit_t2_input")
-                st.markdown("---")
-                m1a, m1b, m1c = st.columns([2,1,1])
-                m1a.text_input("一般招式", key="edit_m1_name_input")
-                m1b.selectbox("屬性", POKEMON_TYPES, key="edit_m1_type_input")
-                m1c.selectbox("分類", MOVE_CATEGORIES, key="edit_m1_cat_input")
-                m2a, m2b, m2c = st.columns([2,1,1])
-                m2a.text_input("強力招式", key="edit_m2_name_input")
-                m2b.selectbox("屬性", POKEMON_TYPES, key="edit_m2_type_input")
-                m2c.selectbox("分類", MOVE_CATEGORIES, key="edit_m2_cat_input")
-                st.form_submit_button("✅ 更新並存檔", type="primary", on_click=lambda: common_save(False))
-        with c2:
-            st.button("🗑️ 刪除", type="secondary", on_click=delete_card_callback)
-            cn = st.session_state['edit_name_input']
-            if cn:
-                fp, bp = os.path.join(IMG_DIR, f"{cn}_前.png"), os.path.join(IMG_DIR, f"{cn}_後.png")
-                if os.path.exists(fp): st.image(fp, caption="正")
-                if os.path.exists(bp): st.image(bp, caption="背")
-
-    if st.session_state['inventory']:
-        st.markdown("---")
-        with st.expander("資料庫清單", expanded=True):
-            df = pd.DataFrame([{
-                "名稱": i['name'], "數值": f"{i.get('attack')}/{i.get('sp_attack')}", "屬性": f"{i['type']}/{i.get('type2','無')}",
-                "招式": f"{i['moves'][0]['name']}/{i['moves'][1]['name']}"
-            } for i in st.session_state['inventory']])
-            df.index += 1
-            ev = st.dataframe(df, use_container_width=True, on_select="rerun", selection_mode="single-row")
-            if len(ev.selection.rows): show_card_image_modal(st.session_state['inventory'][ev.selection.rows[0]]['name'])
 
 # --- Page: Battle Analysis ---
 TYPE_CHART = {
@@ -417,9 +326,9 @@ def get_effectiveness(atk, deff):
 
 def page_battle():
     st.header("⚔️ 對戰分析 (3 vs 3)")
-    st.info("請上傳螢幕截圖，並使用紅框選取「整排有利屬性圖示」，程式會自動將其切分為 左/中/右 進行掃描。")
+    st.info("操作步驟：\n1. 上傳螢幕截圖。\n2. 使用下方 **紅框** 框選出「整排有利屬性圖示」。\n3. 確認下方「預覽圖」中的 **綠/紅/藍** 框框位置正確。\n4. 按下「掃描此區域」。")
     
-    # 1. 圖片上傳與裁切區域 (全寬顯示)
+    # 1. 圖片上傳 (全寬顯示)
     bf = st.file_uploader("對戰截圖", type=["jpg", "png"], key="battle_uploader")
     
     # 自動清空邏輯
@@ -429,13 +338,13 @@ def page_battle():
             st.session_state['battle_config'][i]['detected_weakness'] = []
         st.session_state['last_battle_img'] = current_file_name
 
-    cropped_result = None
     if bf:
         img_file = Image.open(bf)
-        st.markdown("### 1. 截取屬性區域")
-        st.markdown("👇 **請用滑鼠調整紅框，使其包住三個對手的有利屬性區域：**")
+        st.markdown("### 1. 框選掃描範圍 (Scanner)")
+        st.caption("請將紅色框框縮放到只包含三個對手的有利屬性區域 (不要包含其他文字或寶可夢)")
         
-        # 使用 st_cropper 讓使用者選擇範圍，不限制長寬比
+        # 使用 st_cropper (全寬度)
+        # aspect_ratio=None 讓使用者自由調整長寬
         cropped_box_img = st_cropper(
             img_file, 
             realtime_update=True, 
@@ -445,52 +354,56 @@ def page_battle():
         )
         
         if cropped_box_img:
-            # 轉 BGR (OpenCV格式) 用於處理
+            # 轉 BGR (OpenCV格式)
             cropped_result = cv2.cvtColor(np.array(cropped_box_img), cv2.COLOR_RGB2BGR)
             
-            # --- 自動分割預覽 (Visual Feedback) ---
+            # --- 系統自動分割預覽 (視覺回饋) ---
+            # 這裡我們也要縮放預覽圖，模擬真實處理的情況 (0.5x)
             h, w, _ = cropped_result.shape
-            col_w = w // 3
-            preview_img = cropped_result.copy()
-            # 畫出分割線 (左=綠 / 中=紅 / 右=藍)
-            # 注意: OpenCV 是 BGR 格式
-            cv2.rectangle(preview_img, (0, 0), (col_w, h), (0, 255, 0), 2)       # 左: 綠
-            cv2.rectangle(preview_img, (col_w, 0), (col_w*2, h), (0, 0, 255), 2) # 中: 紅
-            cv2.rectangle(preview_img, (col_w*2, 0), (w, h), (255, 0, 0), 2)     # 右: 藍
-            
-            st.image(cv2.cvtColor(preview_img, cv2.COLOR_BGR2RGB), caption="系統自動分割預覽 (左/中/右)", use_container_width=True)
+            preview_h, preview_w = int(h*0.5), int(w*0.5)
+            # 防呆
+            if preview_w > 0 and preview_h > 0:
+                preview_img_small = cv2.resize(cropped_result, (preview_w, preview_h))
+                col_w = preview_w // 3
+                
+                # 畫出分割線 (左=綠 / 中=紅 / 右=藍)
+                cv2.rectangle(preview_img_small, (0, 0), (col_w, preview_h), (0, 255, 0), 2)       # 左: 綠
+                cv2.rectangle(preview_img_small, (col_w, 0), (col_w*2, preview_h), (0, 0, 255), 2) # 中: 紅
+                cv2.rectangle(preview_img_small, (col_w*2, 0), (preview_w, preview_h), (255, 0, 0), 2)     # 右: 藍
+                
+                st.image(cv2.cvtColor(preview_img_small, cv2.COLOR_BGR2RGB), caption="系統將會這樣分割 (0.5x 縮放後)", use_container_width=True)
             
             if st.button("📸 掃描此區域", type="primary", use_container_width=True):
-                # 呼叫新的裁切辨識函式 (傳入的是 PIL 格式的 cropped_box_img)
+                # 傳入的是 PIL 格式的裁切圖
                 detected = detect_attribute_icons_from_crop(cropped_box_img) 
                 for i in range(3):
                     st.session_state['battle_config'][i]['detected_weakness'] = detected[i]
                 
                 if not any(detected):
-                    st.warning("⚠️ 未偵測到圖示。請檢查範本或紅框位置。")
+                    st.warning("⚠️ 未偵測到圖示。請確認紅框是否準確，或是否已建立圖示範本。")
                 else:
-                    st.success("掃描完成！")
+                    st.success("掃描完成！請查看下方結果。")
 
     st.markdown("---")
-    st.markdown("### 2. 對手資訊設定")
+    st.markdown("### 2. 對手資訊與結果")
     
     # 2. 對手屬性設定 (三欄排列)
     cols = st.columns(3)
     cfg = st.session_state['battle_config']
     for i, col in enumerate(cols):
         with col:
-            st.markdown(f"#### 🥊 對手 {i+1}")
+            title_emoji = ["🟢", "🔴", "🔵"] # 對應上面畫框框的顏色
+            st.markdown(f"#### 🥊 對手 {i+1} {title_emoji[i]}")
             det_list = cfg[i]['detected_weakness']
             
-            # 顯示偵測結果
             if det_list:
-                st.markdown(f"**偵測到的有利屬性:**")
+                st.markdown(f"**AI 偵測:**")
                 icon_html = ""
                 for dt in det_list:
                     icon_html += f" ` {dt} ` "
                 st.markdown(icon_html)
             else:
-                st.info("未偵測到")
+                st.caption("等待掃描...")
 
             # 手動設定
             cfg[i]['manual_t1'] = st.selectbox(f"屬性 1", POKEMON_TYPES, index=POKEMON_TYPES.index(cfg[i]['manual_t1']), key=f"op{i}t1")
@@ -502,6 +415,7 @@ def page_battle():
     if st.button("🚀 計算最佳隊伍", type="primary", use_container_width=True):
         if not st.session_state['inventory']: st.error("無卡片資料"); return
         
+        # 判斷是否進入手動模式
         is_manual_mode = False
         for i in range(3):
             if cfg[i]['manual_t1'] != "無" or cfg[i]['manual_t2'] != "無":
@@ -516,7 +430,7 @@ def page_battle():
             atk_v = card.get('attack', 100)
             sp_atk_v = card.get('sp_attack', 100)
             
-            # Mode A: Special
+            # Mode A: Special (使用強力招式)
             max_dmg_s = 0
             best_move_s = ""
             for idx, m in enumerate(card['moves']):
@@ -531,12 +445,12 @@ def page_battle():
                         if m['type'] in cfg[i]['detected_weakness']:
                             eff = 2.5
                         else:
-                            eff = 1.0 # 非有利屬性視為普通
+                            eff = 1.0 
                     
                     eff_total += eff
                 
                 base = atk_v if m.get('category') == '攻擊' else sp_atk_v
-                mult = 1.2 if idx == 1 else 1.0
+                mult = 1.2 if idx == 1 else 1.0 # 第二招通常強一點
                 dmg = base * mult * eff_total
                 if dmg > max_dmg_s:
                     max_dmg_s = dmg
@@ -557,7 +471,7 @@ def page_battle():
                 "dmg": max_dmg_s
             })
 
-            # Mode B: Normal
+            # Mode B: Normal (使用一般招式)
             if tag != "無":
                 m = card['moves'][0] # Force 1st move
                 if m['name']:
@@ -580,7 +494,7 @@ def page_battle():
                         "name": card['name'], 
                         "mode": "normal", 
                         "tag": "無", 
-                        "original_tag": tag, 
+                        "original_tag": tag,
                         "move": f"{m['name']}({m['type']})", 
                         "score": dmg, 
                         "dmg": dmg
@@ -616,7 +530,6 @@ def page_battle():
                 st.success(f"**第 {i+1} 棒**\n\n### {p['name']}\n* **模式**: {t_txt}\n* **建議**: {p['move']}\n* **預估火力**: {int(p['dmg'])}")
 
 # --- Main ---
-# *** 程式進入點 ***
 page = st.sidebar.radio("模式", ["卡片資料庫管理", "對戰分析", "🛠️ 建立圖示範本"])
 if page == "卡片資料庫管理": page_manage_cards()
 elif page == "🛠️ 建立圖示範本": page_template_creator()
