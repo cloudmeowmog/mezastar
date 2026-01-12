@@ -313,8 +313,10 @@ def page_battle():
     st.header("⚔️ 對戰分析 (3 vs 3)")
     st.info("請上傳螢幕截圖，並使用紅框選取「整排有利屬性圖示」，程式會自動將其切分為 左/中/右 進行掃描。")
     
+    # 1. 圖片上傳與裁切區域 (全寬顯示，不再被擠在左欄)
     bf = st.file_uploader("對戰截圖", type=["jpg", "png"], key="battle_uploader")
     
+    # 自動清空邏輯
     current_file_name = bf.name if bf else ""
     if current_file_name != st.session_state.get('last_battle_img', ""):
         for i in range(3):
@@ -327,6 +329,7 @@ def page_battle():
         st.markdown("### 1. 截取屬性區域")
         st.markdown("👇 **請用滑鼠調整紅框，使其包住三個對手的有利屬性區域：**")
         
+        # 使用 st_cropper 讓使用者選擇範圍，不限制長寬比
         cropped_box_img = st_cropper(
             img_file, 
             realtime_update=True, 
@@ -336,11 +339,14 @@ def page_battle():
         )
         
         if cropped_box_img:
+            # 轉 BGR
             cropped_result = cv2.cvtColor(np.array(cropped_box_img), cv2.COLOR_RGB2BGR)
             
+            # 分割預覽 (視覺回饋)
             h, w, _ = cropped_result.shape
             col_w = w // 3
             preview_img = cropped_result.copy()
+            # 畫出分割線 (左/中/右)
             cv2.rectangle(preview_img, (0, 0), (col_w, h), (0, 255, 0), 2)
             cv2.rectangle(preview_img, (col_w, 0), (col_w*2, h), (0, 0, 255), 2)
             cv2.rectangle(preview_img, (col_w*2, 0), (w, h), (255, 0, 0), 2)
@@ -348,6 +354,7 @@ def page_battle():
             st.image(cv2.cvtColor(preview_img, cv2.COLOR_BGR2RGB), caption="系統分割預覽 (左/中/右)", use_container_width=True)
             
             if st.button("📸 掃描此區域", type="primary", use_container_width=True):
+                # 呼叫新的裁切辨識函式
                 detected = detect_attribute_icons_from_crop(cropped_result) 
                 for i in range(3):
                     st.session_state['battle_config'][i]['detected_weakness'] = detected[i]
@@ -360,6 +367,7 @@ def page_battle():
     st.markdown("---")
     st.markdown("### 2. 對手資訊設定")
     
+    # 2. 對手屬性設定 (三欄排列，位於下方)
     cols = st.columns(3)
     cfg = st.session_state['battle_config']
     for i, col in enumerate(cols):
@@ -367,6 +375,7 @@ def page_battle():
             st.markdown(f"#### 🥊 對手 {i+1}")
             det_list = cfg[i]['detected_weakness']
             
+            # 顯示偵測結果
             if det_list:
                 st.markdown(f"**偵測到的有利屬性:**")
                 icon_html = ""
@@ -376,11 +385,13 @@ def page_battle():
             else:
                 st.info("未偵測到")
 
+            # 手動設定
             cfg[i]['manual_t1'] = st.selectbox(f"屬性 1", POKEMON_TYPES, index=POKEMON_TYPES.index(cfg[i]['manual_t1']), key=f"op{i}t1")
             cfg[i]['manual_t2'] = st.selectbox(f"屬性 2", POKEMON_TYPES, index=POKEMON_TYPES.index(cfg[i]['manual_t2']), key=f"op{i}t2")
 
     st.markdown("---")
     
+    # 3. 計算按鈕與結果
     if st.button("🚀 計算最佳隊伍", type="primary", use_container_width=True):
         if not st.session_state['inventory']: st.error("無卡片資料"); return
         
@@ -398,6 +409,7 @@ def page_battle():
             atk_v = card.get('attack', 100)
             sp_atk_v = card.get('sp_attack', 100)
             
+            # Mode A: Special
             max_dmg_s = 0
             best_move_s = ""
             for idx, m in enumerate(card['moves']):
@@ -436,8 +448,9 @@ def page_battle():
                 "dmg": max_dmg_s
             })
 
+            # Mode B: Normal
             if tag != "無":
-                m = card['moves'][0] 
+                m = card['moves'][0] # Force 1st move
                 if m['name']:
                     eff_total = 0
                     for i in range(3):
@@ -493,7 +506,7 @@ def page_battle():
                 
                 st.success(f"**第 {i+1} 棒**\n\n### {p['name']}\n* **模式**: {t_txt}\n* **建議**: {p['move']}\n* **預估火力**: {int(p['dmg'])}")
 
-# --- Main ---
+# --- Main (修正補回) ---
 page = st.sidebar.radio("模式", ["卡片資料庫管理", "對戰分析", "🛠️ 建立圖示範本"])
 if page == "卡片資料庫管理": page_manage_cards()
 elif page == "🛠️ 建立圖示範本": page_template_creator()
