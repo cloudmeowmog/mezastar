@@ -313,7 +313,7 @@ def page_battle():
     st.header("⚔️ 對戰分析 (3 vs 3)")
     st.info("請上傳螢幕截圖，並使用紅框選取「整排有利屬性圖示」，程式會自動將其切分為 左/中/右 進行掃描。")
     
-    # 1. 圖片上傳與裁切區域 (全寬顯示，不再被擠在左欄)
+    # 1. 圖片上傳與裁切區域 (全寬顯示)
     bf = st.file_uploader("對戰截圖", type=["jpg", "png"], key="battle_uploader")
     
     # 自動清空邏輯
@@ -323,13 +323,12 @@ def page_battle():
             st.session_state['battle_config'][i]['detected_weakness'] = []
         st.session_state['last_battle_img'] = current_file_name
 
-    cropped_result = None
     if bf:
         img_file = Image.open(bf)
         st.markdown("### 1. 截取屬性區域")
         st.markdown("👇 **請用滑鼠調整紅框，使其包住三個對手的有利屬性區域：**")
         
-        # 使用 st_cropper 讓使用者選擇範圍，不限制長寬比
+        # 使用 st_cropper 讓使用者選擇範圍
         cropped_box_img = st_cropper(
             img_file, 
             realtime_update=True, 
@@ -507,6 +506,7 @@ def page_battle():
                 st.success(f"**第 {i+1} 棒**\n\n### {p['name']}\n* **模式**: {t_txt}\n* **建議**: {p['move']}\n* **預估火力**: {int(p['dmg'])}")
 
 # --- Main ---
+# *** 這裡就是之前遺失的部分 ***
 page = st.sidebar.radio("模式", ["卡片資料庫管理", "對戰分析", "🛠️ 建立圖示範本"])
 if page == "卡片資料庫管理": page_manage_cards()
 elif page == "🛠️ 建立圖示範本": page_template_creator()
