@@ -114,7 +114,6 @@ defaults = {
     "edit_m2_type_input": "一般",
     "edit_m2_cat_input": "攻擊",
     "manage_sub_mode": "➕ 新增卡片",
-    # 對戰分析用的 opponents 狀態
     "battle_opponents": [
         {"name": "對手1", "t1": "一般", "t2": "無"},
         {"name": "對手2", "t1": "一般", "t2": "無"},
@@ -423,9 +422,9 @@ def page_battle():
                 else:
                     with st.spinner("AI 正在分析畫面並查詢屬性資料庫..."):
                         try:
-                            # 呼叫 Gemini 辨識 + 知識檢索
-                            model = genai.GenerativeModel('gemini-1.5-flash')
-                            # Prompt: 請 AI 辨識圖中三隻寶可夢，並根據其知識庫回傳屬性 (繁體中文)
+                            # 修正：使用更具體的模型名稱，避免 404
+                            model = genai.GenerativeModel('gemini-1.5-flash-latest')
+                            
                             prompt = """
                             Identify the names of the 3 Pokemon in this arcade battle screen image.
                             They are usually displayed with a star ranking.
@@ -448,14 +447,12 @@ def page_battle():
                             img_data = Image.open(battle_img)
                             response = model.generate_content([prompt, img_data])
                             
-                            # 處理 JSON 回傳
                             txt = response.text.strip()
                             if txt.startswith("```json"):
                                 txt = txt.replace("```json", "").replace("```", "")
                             
                             opponents_data = json.loads(txt)
                             
-                            # 更新 Session State
                             if isinstance(opponents_data, list) and len(opponents_data) == 3:
                                 st.session_state['battle_opponents'] = opponents_data
                                 st.success("辨識成功！屬性已自動帶入。")
@@ -468,18 +465,14 @@ def page_battle():
     with col_info:
         st.subheader("2. 對手資訊 (可手動修正)")
         
-        # 顯示/編輯 對手資訊
         opp_cols = st.columns(3)
         current_ops = st.session_state['battle_opponents']
         
         for i, col in enumerate(opp_cols):
             with col:
                 st.markdown(f"#### 🥊 {current_ops[i]['name']}")
-                # 這裡的 Key 使用 index 綁定，當 session_state 更新時會連動
                 t1 = st.selectbox(f"屬性 1", POKEMON_TYPES, index=POKEMON_TYPES.index(current_ops[i]['t1']) if current_ops[i]['t1'] in POKEMON_TYPES else 0, key=f"op_{i}_t1")
                 t2 = st.selectbox(f"屬性 2", POKEMON_TYPES, index=POKEMON_TYPES.index(current_ops[i]['t2']) if current_ops[i]['t2'] in POKEMON_TYPES else len(POKEMON_TYPES)-1, key=f"op_{i}_t2")
-                
-                # 更新回 session state (若是手動修改)
                 current_ops[i]['t1'] = t1
                 current_ops[i]['t2'] = t2
 
@@ -505,7 +498,6 @@ def page_battle():
             for idx, move in enumerate(card['moves']):
                 if not move['name']: continue
                 
-                # 計算對三個對手的總傷害倍率
                 eff_sum = 0
                 for opp in opponents:
                     eff_sum += calculate_dual_effectiveness(move['type'], opp['t1'], opp['t2'])
@@ -520,16 +512,15 @@ def page_battle():
                     max_aoe_special = total
                     best_move_special = f"{move['name']}({move['type']}/{cat})"
             
-            score_special = max_aoe_special # 純火力分數
+            score_special = max_aoe_special
             tag_name = card['tag']
             
-            # 優先權重修正
             if tag_name in ["極巨化", "Z招式"]:
                 score_special *= 1.3
             elif tag_name != '無':
                 score_special *= 1.15
             
-            best_move_display_special = best_move_special
+            best_move_display_special = best_move_special # Syntax fixed
             
             candidates.append({
                 "name": card['name'],
@@ -545,7 +536,6 @@ def page_battle():
                 max_aoe_normal = 0
                 best_move_normal = ""
                 
-                # 強制只看第一招
                 move = card['moves'][0]
                 if move['name']:
                     eff_sum = 0
@@ -570,10 +560,8 @@ def page_battle():
                     "mode": "normal"
                 })
 
-        # 排序
         candidates.sort(key=lambda x: x['score'], reverse=True)
 
-        # 挑選隊伍
         final_team = []
         used_names = set()
         used_tags = set()
@@ -593,7 +581,6 @@ def page_battle():
             if tag != '無':
                 used_tags.add(tag)
 
-        # 顯示結果
         st.subheader("🏆 推薦出戰陣容 (最大化總傷害)")
         
         cols = st.columns(3)
