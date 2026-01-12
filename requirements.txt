@@ -1,6 +1,6 @@
 streamlit
 pandas
-google-generativeai
-Pillow
 numpy
 opencv-python-headless
+Pillow
+streamlit-cropper
