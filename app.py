@@ -3,7 +3,7 @@ import pandas as pd
 import json
 import os
 import numpy as np
-import cv2 # pip install opencv-python-headless
+import cv2 # 需安裝: pip install opencv-python-headless
 from PIL import Image
 
 # --- 設定頁面 ---
@@ -12,8 +12,9 @@ st.set_page_config(page_title="Mezastar 檔案室", layout="wide", page_icon="�
 # --- 設定資料庫與圖示路徑 ---
 DB_FILE = "mezastar_db.json"
 IMG_DIR = "cardinfo"
-ICON_DIR = "att_icon"
+ICON_DIR = "att_icon" # 雖改用色彩辨識，保留目錄定義以免報錯
 
+# 確保目錄存在
 for d in [IMG_DIR, ICON_DIR]:
     if not os.path.exists(d):
         os.makedirs(d)
@@ -50,15 +51,16 @@ def save_card_images(name):
     current_key = st.session_state['uploader_key']
     front = st.session_state.get(f"u_front_{current_key}")
     back = st.session_state.get(f"u_back_{current_key}")
+    
     if front:
         Image.open(front).save(os.path.join(IMG_DIR, f"{name}_前.png"), "PNG")
     if back:
         Image.open(back).save(os.path.join(IMG_DIR, f"{name}_後.png"), "PNG")
 
-# --- Helper: 邊緣檢測比對 (Edge-Based Matching) ---
+# --- Helper: 色彩過濾 + 輪廓比對 (Color-Based Detection) ---
 def detect_attribute_icons(uploaded_image, show_debug=False):
     """
-    使用 Canny 邊緣檢測進行特徵比對，抗光影干擾能力較強。
+    針對螢幕翻拍最佳化：使用 HSV 色彩空間過濾屬性顏色。
     """
     # 1. 讀取圖片
     file_bytes = np.asarray(bytearray(uploaded_image.read()), dtype=np.uint8)
@@ -67,110 +69,91 @@ def detect_attribute_icons(uploaded_image, show_debug=False):
     if img_bgr is None:
         return [[], [], []]
 
-    # 2. 影像前處理：縮放
-    # 縮小一點可以減少雜訊，加快速度。寬度設為 800-1000 左右通常剛好。
+    # 2. 影像前處理：縮放 & 轉 HSV
+    # 縮放到寬度 1000px，既能保留細節又能加速運算
     target_width = 1000
     h, w, _ = img_bgr.shape
-    scale_factor = target_width / w
-    new_h = int(h * scale_factor)
+    scale = target_width / w
+    new_h = int(h * scale)
     img_resized = cv2.resize(img_bgr, (target_width, new_h))
     
-    # 3. 轉灰階 + 高斯模糊 (去除網點與雜訊)
-    img_gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
-    img_blur = cv2.GaussianBlur(img_gray, (5, 5), 0)
+    # *** 關鍵優化：只取畫面下半部 (0.55 ~ 0.95) ***
+    # 有利屬性通常在下方，這樣可以避開寶可夢本身的顏色干擾
+    start_y = int(new_h * 0.55)
+    end_y = int(new_h * 0.95)
+    img_roi = img_resized[start_y:end_y, :]
     
-    # 4. Canny 邊緣檢測 (取出輪廓)
-    # 參數 50, 150 是經驗值，可調整。數值越小線條越多(雜訊也多)，數值越大線條越少。
-    img_edges = cv2.Canny(img_blur, 50, 150)
+    # 轉為 HSV 色彩空間 (比 RGB 更適合處理光影變化)
+    img_hsv = cv2.cvtColor(img_roi, cv2.COLOR_BGR2HSV)
+
+    # 3. 定義屬性顏色範圍 (HSV)
+    # 這是針對一般螢幕翻拍調整過的範圍
+    # H: 色相 (0-179), S: 飽和度 (0-255), V: 亮度 (0-255)
+    color_ranges = {
+        "火":   [np.array([0, 120, 100]),   np.array([10, 255, 255])],    # 紅
+        "火2":  [np.array([170, 120, 100]), np.array([180, 255, 255])],   # 紅(跨越180度)
+        "水":   [np.array([100, 100, 80]),  np.array([130, 255, 255])],   # 藍
+        "草":   [np.array([35, 80, 80]),    np.array([85, 255, 255])],    # 綠
+        "電":   [np.array([20, 100, 100]),  np.array([35, 255, 255])],    # 黃
+        "冰":   [np.array([85, 50, 150]),   np.array([100, 200, 255])],   # 淺藍/青
+        "超能力":[np.array([135, 50, 100]),  np.array([165, 255, 255])],   # 粉紫
+        "格鬥": [np.array([10, 100, 100]),  np.array([20, 255, 255])],    # 橘
+        "妖精": [np.array([160, 50, 150]),  np.array([179, 200, 255])],   # 粉紅
+        # 岩石/地面/鋼/一般 顏色較難抓，建議手動補
+    }
+
+    detected_results = [set(), set(), set()]
+    col_w = target_width // 3
     
-    # 5. 切割 ROI (只取下方 45% 區域，避開上半部的干擾)
-    crop_start_y = int(new_h * 0.55) 
-    img_roi = img_edges[crop_start_y:, :]
-    
-    if show_debug:
-        st.write("🔍 [除錯] 畫面輪廓圖 (電腦看到的樣子):")
-        st.image(img_roi, caption="ROI Edges", channels="GRAY")
+    # 用於 Debug 顯示的畫布
+    img_debug = img_roi.copy()
 
-    # 切割成左、中、右三份
-    roi_h, roi_w = img_roi.shape
-    col_w = roi_w // 3
-    
-    # 為了防止圖示剛好卡在切線上，我們可以讓區域稍微重疊 (Overlapping)
-    overlap = 50 
-    rois = [
-        img_roi[:, 0 : col_w + overlap],           # 左
-        img_roi[:, col_w - overlap : col_w*2 + overlap], # 中
-        img_roi[:, col_w*2 - overlap :]            # 右
-    ]
-    
-    detected_results = [[], [], []]
-    
-    # 6. 讀取並處理模版 (Templates)
-    templates = {}
-    if os.path.exists(ICON_DIR):
-        for filename in os.listdir(ICON_DIR):
-            if filename.endswith(".png"):
-                type_name = filename.replace(".png", "")
-                icon_path = os.path.join(ICON_DIR, filename)
-                
-                # 讀取模版
-                templ_bgr = cv2.imread(icon_path)
-                if templ_bgr is not None:
-                    # 模版也要做一樣的處理：轉灰階 -> 邊緣檢測
-                    templ_gray = cv2.cvtColor(templ_bgr, cv2.COLOR_BGR2GRAY)
-                    # 模版通常比較乾淨，Canny 參數可以設嚴格一點，或者保持一致
-                    templ_edges = cv2.Canny(templ_gray, 50, 200)
-                    templates[type_name] = templ_edges
-
-    if not templates:
-        st.warning(f"⚠️ `{ICON_DIR}` 資料夾內沒有圖片。")
-        uploaded_image.seek(0)
-        return [[], [], []]
-
-    # 7. 多重尺度比對
-    # 由於是比對「線條」，準確度較高，我們可以減少 scale 的數量來提升速度
-    # 範圍從 0.5 到 1.5 倍應該足夠涵蓋大部分拍攝距離
-    icon_scales = np.linspace(0.5, 1.5, 10) 
-    threshold = 0.35 # 邊緣比對的計分方式不同，通常門檻要設低很多 (0.3~0.5 就算很高了)
-
-    progress_bar = st.progress(0, text="AI 邊緣特徵分析中...")
-    total_steps = len(templates)
-    step_count = 0
-
-    final_detections = [set(), set(), set()]
-
-    for type_name, templ in templates.items():
-        step_count += 1
-        progress_bar.progress(int(step_count / total_steps * 100), text=f"掃描屬性: {type_name}")
+    for type_name, (lower, upper) in color_ranges.items():
+        # 建立遮罩
+        mask = cv2.inRange(img_hsv, lower, upper)
         
-        for scale in icon_scales:
-            # 縮放模版
-            t_w = int(templ.shape[1] * scale)
-            t_h = int(templ.shape[0] * scale)
+        # 形態學運算：去除雜點 (開運算)
+        kernel = np.ones((3,3), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        
+        # 尋找輪廓
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        real_name = type_name.replace("2", "") # 修正 "火2" -> "火"
+        
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
             
-            if t_w < 10 or t_h < 10: continue # 太小略過
-            
-            resized_templ = cv2.resize(templ, (t_w, t_h))
-            
-            for i, roi in enumerate(rois):
-                if t_w > roi.shape[1] or t_h > roi.shape[0]: continue
+            # 過濾太小或太大的色塊 (經驗值：在 1000px 寬的圖中，屬性圖示面積約 300~4000)
+            if 300 < area < 4000:
+                x, y, w, h = cv2.boundingRect(cnt)
                 
-                # 使用 TM_CCOEFF_NORMED
-                res = cv2.matchTemplate(roi, resized_templ, cv2.TM_CCOEFF_NORMED)
-                
-                # 邊緣比對在只有線條的情況下，分數會比較極端
-                if np.max(res) >= threshold:
-                    final_detections[i].add(type_name)
-                    # 如果分數很高，直接認定找到了，跳過其他尺寸加速
-                    if np.max(res) > 0.6: 
-                        break
+                # 過濾長寬比：圖示通常接近正方形 (0.7 ~ 1.4)
+                aspect_ratio = float(w)/h
+                if 0.7 < aspect_ratio < 1.4:
+                    # 判斷位置 (左/中/右)
+                    center_x = x + w//2
+                    col_idx = 0
+                    if center_x > col_w and center_x < col_w*2:
+                        col_idx = 1
+                    elif center_x >= col_w*2:
+                        col_idx = 2
+                    
+                    detected_results[col_idx].add(real_name)
+                    
+                    # 畫框框 (Debug)
+                    cv2.rectangle(img_debug, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                    cv2.putText(img_debug, real_name, (x, y-5), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
-    for i in range(3):
-        detected_results[i] = list(final_detections[i])
-    
-    progress_bar.empty()
-    uploaded_image.seek(0) # 重置檔案指標
-    return detected_results
+    if show_debug:
+        st.write("🔍 [除錯模式] 色彩偵測結果 (顯示抓到的色塊位置):")
+        # 轉回 RGB 顯示
+        st.image(cv2.cvtColor(img_debug, cv2.COLOR_BGR2RGB), use_container_width=True)
+
+    # 轉回 list
+    final_output = [list(s) for s in detected_results]
+    uploaded_image.seek(0)
+    return final_output
 
 # --- 初始化 Session State ---
 if 'inventory' not in st.session_state:
@@ -356,13 +339,6 @@ def page_manage_cards():
             if len(ev.selection.rows): show_card_image_modal(st.session_state['inventory'][ev.selection.rows[0]]['name'])
 
 # --- Page: Battle Analysis ---
-def get_effectiveness(atk, deff):
-    if deff == "無" or atk == "無": return 1.0
-    # 這裡省略 TYPE_CHART 定義以節省空間，請保持原本的 TYPE_CHART 字典
-    # ... (請將原本的 TYPE_CHART 貼回這裡，或者確保它在全域變數中) ...
-    return TYPE_CHART.get(atk, {}).get(deff, 1.0)
-
-# 補回 TYPE_CHART (為了完整性)
 TYPE_CHART = {
     "一般": {"岩石": 0.5, "幽靈": 0, "鋼": 0.5},
     "火": {"草": 2, "冰": 2, "蟲": 2, "鋼": 2, "水": 0.5, "火": 0.5, "岩石": 0.5, "龍": 0.5},
@@ -384,26 +360,28 @@ TYPE_CHART = {
     "妖精": {"格鬥": 2, "龍": 2, "惡": 2, "毒": 0.5, "鋼": 0.5, "火": 0.5}
 }
 
+def get_effectiveness(atk, deff):
+    if deff == "無" or atk == "無": return 1.0
+    return TYPE_CHART.get(atk, {}).get(deff, 1.0)
+
 def page_battle():
     st.header("⚔️ 對戰分析 (3 vs 3)")
-    st.info("上傳螢幕截圖，系統將使用「邊緣檢測」技術比對「有利屬性」圖示。")
+    st.info("上傳螢幕截圖，系統將使用「色彩辨識」技術掃描「有利屬性」圖示。")
     
     c_img, c_cfg = st.columns([1, 2])
     with c_img:
         bf = st.file_uploader("對戰截圖", type=["jpg", "png"])
-        debug_mode = st.checkbox("顯示除錯影像 (查看電腦看到的輪廓)", value=False)
+        debug_mode = st.checkbox("顯示除錯影像 (查看抓到的色塊)", value=False)
         
         if bf:
             st.image(bf, width=250)
             if st.button("📸 掃描有利屬性", type="primary"):
-                # 呼叫新的偵測函式，並傳入除錯模式旗標
                 detected = detect_attribute_icons(bf, show_debug=debug_mode) 
                 for i in range(3):
                     st.session_state['battle_config'][i]['detected_weakness'] = detected[i]
                 
-                # 如果完全沒抓到，給提示
                 if not any(detected):
-                    st.warning("⚠️ 未偵測到任何圖示。請嘗試開啟「除錯影像」檢查輪廓是否清晰。")
+                    st.warning("⚠️ 未偵測到圖示。可能是顏色範圍需微調，或屬性顏色(如鋼、一般)不鮮豔。")
                 else:
                     st.success("掃描完成！")
 
@@ -443,6 +421,7 @@ def page_battle():
                 eff_total = 0
                 for i in range(3):
                     eff = get_effectiveness(m['type'], cfg[i]['manual_t1']) * get_effectiveness(m['type'], cfg[i]['manual_t2'])
+                    # 如果偵測到有利屬性，強制給予 2.5 倍
                     if m['type'] in cfg[i]['detected_weakness']:
                         eff = max(eff, 2.5)
                     eff_total += eff
