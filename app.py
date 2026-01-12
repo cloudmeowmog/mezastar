@@ -3,7 +3,7 @@ import pandas as pd
 import json
 import os
 import numpy as np
-import cv2 # 必須安裝: pip install opencv-python-headless
+import cv2 # pip install opencv-python-headless
 from PIL import Image
 
 # --- 設定頁面 ---
@@ -12,16 +12,14 @@ st.set_page_config(page_title="Mezastar 檔案室", layout="wide", page_icon="�
 # --- 設定資料庫與圖示路徑 ---
 DB_FILE = "mezastar_db.json"
 IMG_DIR = "cardinfo"
-ICON_DIR = "att_icon" # 請在此資料夾放入屬性圖示 (例如: 火.png)
+ICON_DIR = "att_icon"
 
-# 確保目錄存在
 for d in [IMG_DIR, ICON_DIR]:
     if not os.path.exists(d):
         os.makedirs(d)
 
 # --- Helper: 排序資料庫 ---
 def sort_inventory(data):
-    """依照名稱 (name) 對資料庫進行 A-Z 排序"""
     if data:
         data.sort(key=lambda x: x['name'])
     return data
@@ -52,20 +50,15 @@ def save_card_images(name):
     current_key = st.session_state['uploader_key']
     front = st.session_state.get(f"u_front_{current_key}")
     back = st.session_state.get(f"u_back_{current_key}")
-    
     if front:
         Image.open(front).save(os.path.join(IMG_DIR, f"{name}_前.png"), "PNG")
     if back:
         Image.open(back).save(os.path.join(IMG_DIR, f"{name}_後.png"), "PNG")
 
-# --- Helper: OpenCV 圖示比對 (增強版) ---
-def detect_attribute_icons(uploaded_image):
+# --- Helper: 邊緣檢測比對 (Edge-Based Matching) ---
+def detect_attribute_icons(uploaded_image, show_debug=False):
     """
-    針對螢幕翻拍優化：
-    1. 縮放至固定寬度 (1000px)。
-    2. 轉灰階比對 (抗色偏)。
-    3. 只搜尋下半部 (ROI)。
-    4. 多重尺度掃描 (0.3x ~ 2.0x)。
+    使用 Canny 邊緣檢測進行特徵比對，抗光影干擾能力較強。
     """
     # 1. 讀取圖片
     file_bytes = np.asarray(bytearray(uploaded_image.read()), dtype=np.uint8)
@@ -74,54 +67,73 @@ def detect_attribute_icons(uploaded_image):
     if img_bgr is None:
         return [[], [], []]
 
-    # 2. 影像前處理：縮放與灰階
+    # 2. 影像前處理：縮放
+    # 縮小一點可以減少雜訊，加快速度。寬度設為 800-1000 左右通常剛好。
     target_width = 1000
     h, w, _ = img_bgr.shape
     scale_factor = target_width / w
     new_h = int(h * scale_factor)
     img_resized = cv2.resize(img_bgr, (target_width, new_h))
     
-    # 轉灰階
+    # 3. 轉灰階 + 高斯模糊 (去除網點與雜訊)
     img_gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
+    img_blur = cv2.GaussianBlur(img_gray, (5, 5), 0)
     
-    # *** 關鍵優化：只保留下半部 (有利屬性通常在卡片下方) ***
-    crop_start_y = int(new_h * 0.6) 
-    img_crop = img_gray[crop_start_y:, :]
+    # 4. Canny 邊緣檢測 (取出輪廓)
+    # 參數 50, 150 是經驗值，可調整。數值越小線條越多(雜訊也多)，數值越大線條越少。
+    img_edges = cv2.Canny(img_blur, 50, 150)
     
+    # 5. 切割 ROI (只取下方 45% 區域，避開上半部的干擾)
+    crop_start_y = int(new_h * 0.55) 
+    img_roi = img_edges[crop_start_y:, :]
+    
+    if show_debug:
+        st.write("🔍 [除錯] 畫面輪廓圖 (電腦看到的樣子):")
+        st.image(img_roi, caption="ROI Edges", channels="GRAY")
+
     # 切割成左、中、右三份
-    crop_h, crop_w = img_crop.shape
-    col_w = crop_w // 3
+    roi_h, roi_w = img_roi.shape
+    col_w = roi_w // 3
     
+    # 為了防止圖示剛好卡在切線上，我們可以讓區域稍微重疊 (Overlapping)
+    overlap = 50 
     rois = [
-        img_crop[:, 0:col_w],       # 左
-        img_crop[:, col_w:col_w*2], # 中
-        img_crop[:, col_w*2:]       # 右
+        img_roi[:, 0 : col_w + overlap],           # 左
+        img_roi[:, col_w - overlap : col_w*2 + overlap], # 中
+        img_roi[:, col_w*2 - overlap :]            # 右
     ]
     
     detected_results = [[], [], []]
     
-    # 3. 準備圖示模版 (轉灰階)
+    # 6. 讀取並處理模版 (Templates)
     templates = {}
     if os.path.exists(ICON_DIR):
         for filename in os.listdir(ICON_DIR):
             if filename.endswith(".png"):
                 type_name = filename.replace(".png", "")
                 icon_path = os.path.join(ICON_DIR, filename)
+                
+                # 讀取模版
                 templ_bgr = cv2.imread(icon_path)
                 if templ_bgr is not None:
-                    templates[type_name] = cv2.cvtColor(templ_bgr, cv2.COLOR_BGR2GRAY)
+                    # 模版也要做一樣的處理：轉灰階 -> 邊緣檢測
+                    templ_gray = cv2.cvtColor(templ_bgr, cv2.COLOR_BGR2GRAY)
+                    # 模版通常比較乾淨，Canny 參數可以設嚴格一點，或者保持一致
+                    templ_edges = cv2.Canny(templ_gray, 50, 200)
+                    templates[type_name] = templ_edges
 
     if not templates:
-        st.warning(f"⚠️ `{ICON_DIR}` 資料夾內沒有圖片，無法進行比對。")
+        st.warning(f"⚠️ `{ICON_DIR}` 資料夾內沒有圖片。")
         uploaded_image.seek(0)
         return [[], [], []]
 
-    # 4. 多重尺度比對
-    # 嘗試 0.3倍 到 2.0倍，共 20 種尺寸
-    icon_scales = np.linspace(0.3, 2.0, 20) 
-    threshold = 0.65 # 針對翻拍照片，門檻設低一點
+    # 7. 多重尺度比對
+    # 由於是比對「線條」，準確度較高，我們可以減少 scale 的數量來提升速度
+    # 範圍從 0.5 到 1.5 倍應該足夠涵蓋大部分拍攝距離
+    icon_scales = np.linspace(0.5, 1.5, 10) 
+    threshold = 0.35 # 邊緣比對的計分方式不同，通常門檻要設低很多 (0.3~0.5 就算很高了)
 
-    progress_bar = st.progress(0, text="AI 影像深度分析中...")
+    progress_bar = st.progress(0, text="AI 邊緣特徵分析中...")
     total_steps = len(templates)
     step_count = 0
 
@@ -129,30 +141,35 @@ def detect_attribute_icons(uploaded_image):
 
     for type_name, templ in templates.items():
         step_count += 1
-        progress_bar.progress(int(step_count / total_steps * 100), text=f"掃描屬性: {type_name}...")
+        progress_bar.progress(int(step_count / total_steps * 100), text=f"掃描屬性: {type_name}")
         
         for scale in icon_scales:
+            # 縮放模版
             t_w = int(templ.shape[1] * scale)
             t_h = int(templ.shape[0] * scale)
             
-            if t_w == 0 or t_h == 0: continue
+            if t_w < 10 or t_h < 10: continue # 太小略過
             
             resized_templ = cv2.resize(templ, (t_w, t_h))
             
             for i, roi in enumerate(rois):
                 if t_w > roi.shape[1] or t_h > roi.shape[0]: continue
                 
+                # 使用 TM_CCOEFF_NORMED
                 res = cv2.matchTemplate(roi, resized_templ, cv2.TM_CCOEFF_NORMED)
+                
+                # 邊緣比對在只有線條的情況下，分數會比較極端
                 if np.max(res) >= threshold:
                     final_detections[i].add(type_name)
-                    # 如果某個尺度極度吻合，稍微加速
-                    if np.max(res) > 0.85: break 
+                    # 如果分數很高，直接認定找到了，跳過其他尺寸加速
+                    if np.max(res) > 0.6: 
+                        break
 
     for i in range(3):
         detected_results[i] = list(final_detections[i])
     
     progress_bar.empty()
-    uploaded_image.seek(0)
+    uploaded_image.seek(0) # 重置檔案指標
     return detected_results
 
 # --- 初始化 Session State ---
@@ -339,6 +356,13 @@ def page_manage_cards():
             if len(ev.selection.rows): show_card_image_modal(st.session_state['inventory'][ev.selection.rows[0]]['name'])
 
 # --- Page: Battle Analysis ---
+def get_effectiveness(atk, deff):
+    if deff == "無" or atk == "無": return 1.0
+    # 這裡省略 TYPE_CHART 定義以節省空間，請保持原本的 TYPE_CHART 字典
+    # ... (請將原本的 TYPE_CHART 貼回這裡，或者確保它在全域變數中) ...
+    return TYPE_CHART.get(atk, {}).get(deff, 1.0)
+
+# 補回 TYPE_CHART (為了完整性)
 TYPE_CHART = {
     "一般": {"岩石": 0.5, "幽靈": 0, "鋼": 0.5},
     "火": {"草": 2, "冰": 2, "蟲": 2, "鋼": 2, "水": 0.5, "火": 0.5, "岩石": 0.5, "龍": 0.5},
@@ -360,24 +384,28 @@ TYPE_CHART = {
     "妖精": {"格鬥": 2, "龍": 2, "惡": 2, "毒": 0.5, "鋼": 0.5, "火": 0.5}
 }
 
-def get_effectiveness(atk, deff):
-    if deff == "無" or atk == "無": return 1.0
-    return TYPE_CHART.get(atk, {}).get(deff, 1.0)
-
 def page_battle():
     st.header("⚔️ 對戰分析 (3 vs 3)")
-    st.info("上傳螢幕截圖，系統將比對「有利屬性」圖示，並保留手動調整對手屬性的功能。")
+    st.info("上傳螢幕截圖，系統將使用「邊緣檢測」技術比對「有利屬性」圖示。")
     
     c_img, c_cfg = st.columns([1, 2])
     with c_img:
         bf = st.file_uploader("對戰截圖", type=["jpg", "png"])
+        debug_mode = st.checkbox("顯示除錯影像 (查看電腦看到的輪廓)", value=False)
+        
         if bf:
             st.image(bf, width=250)
             if st.button("📸 掃描有利屬性", type="primary"):
-                detected = detect_attribute_icons(bf) # [[types], [types], [types]]
+                # 呼叫新的偵測函式，並傳入除錯模式旗標
+                detected = detect_attribute_icons(bf, show_debug=debug_mode) 
                 for i in range(3):
                     st.session_state['battle_config'][i]['detected_weakness'] = detected[i]
-                st.success("掃描完成！")
+                
+                # 如果完全沒抓到，給提示
+                if not any(detected):
+                    st.warning("⚠️ 未偵測到任何圖示。請嘗試開啟「除錯影像」檢查輪廓是否清晰。")
+                else:
+                    st.success("掃描完成！")
 
     with c_cfg:
         cols = st.columns(3)
